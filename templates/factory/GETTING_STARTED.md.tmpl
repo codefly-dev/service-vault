@@ -1,0 +1,12 @@
+# Getting Started with {{.Name}}
+
+This service runs HashiCorp Vault in dev mode via Docker.
+
+## Access
+
+- Vault UI: http://localhost:<port>
+- Token: configured in `configurations/local/vault.secret.env`
+
+## Transit Engine
+
+A transit key named `api-keys` is automatically created on startup for hashing and encrypting API key material.

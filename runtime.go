@@ -1,0 +1,326 @@
+package main
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/codefly-dev/core/agents/services"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	"github.com/codefly-dev/core/resources"
+	runners "github.com/codefly-dev/core/runners/base"
+	"github.com/codefly-dev/core/wool"
+)
+
+type Runtime struct {
+	services.RuntimeServer
+	*Service
+
+	runnerEnvironment *runners.DockerEnvironment
+	vaultPort         uint16
+	vaultAddress      string
+}
+
+func NewRuntime() *Runtime {
+	return &Runtime{
+		Service: NewService(),
+	}
+}
+
+func (s *Runtime) Load(ctx context.Context, req *runtimev0.LoadRequest) (*runtimev0.LoadResponse, error) {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+
+	s.Runtime.LogLoadRequest(req)
+
+	err := s.Base.Load(ctx, req.Identity, s.Settings)
+	if err != nil {
+		return s.Runtime.LoadErrorf(err, "loading base")
+	}
+
+	s.Runtime.SetEnvironment(req.Environment)
+
+	requirements.Localize(s.Location)
+
+	s.Endpoints, err = s.Base.Service.LoadEndpoints(ctx)
+	if err != nil {
+		return s.Runtime.LoadErrorf(err, "cannot load endpoints")
+	}
+
+	s.Wool.Debug("endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(s.Endpoints)))
+
+	s.HttpEndpoint, err = resources.FindHTTPEndpoint(ctx, s.Endpoints)
+	if err != nil {
+		return s.Runtime.LoadErrorf(err, "cannot find HTTP endpoint")
+	}
+
+	return s.Runtime.LoadResponse()
+}
+
+func callingContext() *basev0.NetworkAccess {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return resources.NewContainerNetworkAccess()
+	}
+	return resources.NewNativeNetworkAccess()
+}
+
+func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+
+	s.Runtime.LogInitRequest(req)
+
+	w := s.Wool.In("runtime::init")
+
+	s.NetworkMappings = req.ProposedNetworkMappings
+	s.Configuration = req.Configuration
+
+	net, err := resources.FindNetworkMapping(ctx, s.NetworkMappings, s.HttpEndpoint)
+	if err != nil {
+		return s.Runtime.InitError(err)
+	}
+	if net == nil {
+		return s.Runtime.InitError(w.NewError("network mapping is nil"))
+	}
+
+	instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, s.NetworkMappings, s.HttpEndpoint, callingContext())
+	if err != nil {
+		return s.Runtime.InitError(err)
+	}
+	if instance == nil {
+		return s.Runtime.InitError(w.NewError("network instance is nil"))
+	}
+
+	w.Debug("http network instance", wool.Field("instance", instance))
+
+	s.vaultPort = 8200
+
+	err = s.LoadConfiguration(ctx, s.Configuration)
+	if err != nil {
+		return s.Runtime.InitError(err)
+	}
+
+	// Create connection configs for all network instances
+	for _, inst := range net.Instances {
+		conf := s.CreateConnectionConfiguration(ctx, inst)
+		w.Debug("adding configuration", wool.Field("config", resources.MakeConfigurationSummary(conf)), wool.Field("instance", inst))
+		s.Runtime.RuntimeConfigurations = append(s.Runtime.RuntimeConfigurations, conf)
+	}
+
+	// Store the address for health checks
+	hostInstance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, s.NetworkMappings, s.HttpEndpoint, callingContext())
+	if err != nil {
+		return s.Runtime.InitError(err)
+	}
+	s.vaultAddress = hostInstance.Address
+
+	// Docker
+	runner, err := runners.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+	if err != nil {
+		return s.Runtime.InitError(err)
+	}
+
+	runner.WithOutput(s.Wool)
+	runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
+	runner.WithEnvironmentVariables(ctx,
+		resources.Env("VAULT_DEV_ROOT_TOKEN_ID", s.vaultToken),
+		resources.Env("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200"),
+		resources.Env("SKIP_SETCAP", "true"),
+	)
+
+	s.runnerEnvironment = runner
+
+	w.Debug("init for runner environment: will start container")
+	err = s.runnerEnvironment.Init(ctx)
+	if err != nil {
+		return s.Runtime.InitError(err)
+	}
+
+	w.Debug("init successful")
+	return s.Runtime.InitResponse()
+}
+
+func (s *Runtime) WaitForReady(ctx context.Context) error {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+
+	s.Wool.Debug("waiting for ready", wool.Field("address", s.vaultAddress))
+
+	maxRetry := 10
+	for retry := 0; retry < maxRetry; retry++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.vaultAddress+"/v1/sys/health", nil)
+		if err != nil {
+			return s.Wool.Wrapf(err, "cannot create health request")
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			// Vault returns 200 when initialized, unsealed, and active
+			if resp.StatusCode == 200 {
+				s.Wool.Debug("vault is ready!")
+				return nil
+			}
+		}
+		s.Wool.Debug("waiting for vault to be ready", wool.ErrField(err))
+		time.Sleep(2 * time.Second)
+	}
+	return s.Wool.NewError("vault is not ready")
+}
+
+func (s *Runtime) enableTransit(ctx context.Context) error {
+	defer s.Wool.Catch()
+
+	// Enable transit secrets engine
+	err := s.vaultRequest(ctx, http.MethodPost, "/v1/sys/mounts/transit",
+		`{"type":"transit"}`)
+	if err != nil {
+		// Ignore "already enabled" errors
+		if !strings.Contains(err.Error(), "existing mount") && !strings.Contains(err.Error(), "already in use") {
+			return s.Wool.Wrapf(err, "cannot enable transit engine")
+		}
+	}
+	s.Wool.Debug("transit engine enabled")
+
+	// Create the transit key for API keys
+	keyName := s.Settings.TransitKey
+	if keyName == "" {
+		keyName = "api-keys"
+	}
+	err = s.vaultRequest(ctx, http.MethodPost,
+		fmt.Sprintf("/v1/transit/keys/%s", keyName),
+		`{"type":"aes256-gcm96"}`)
+	if err != nil {
+		if !strings.Contains(err.Error(), "already exists") {
+			return s.Wool.Wrapf(err, "cannot create transit key")
+		}
+	}
+	s.Wool.Debug("transit key created", wool.Field("key", keyName))
+
+	return nil
+}
+
+func (s *Runtime) seedJWTSigningKey(ctx context.Context) error {
+	defer s.Wool.Catch()
+
+	// Check if key already exists
+	err := s.vaultRequest(ctx, http.MethodGet, "/v1/secret/data/jwt-signing-key", "")
+	if err == nil {
+		s.Wool.Debug("JWT signing key already exists")
+		return nil
+	}
+
+	// Generate Ed25519 key pair
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return s.Wool.Wrapf(err, "cannot generate Ed25519 key pair")
+	}
+
+	// Store seed (first 32 bytes of private key) and public key
+	privSeed := base64.StdEncoding.EncodeToString(priv.Seed())
+	pubEncoded := base64.StdEncoding.EncodeToString(pub)
+
+	body := fmt.Sprintf(`{"data":{"private_key":"%s","public_key":"%s","algorithm":"EdDSA"}}`,
+		privSeed, pubEncoded)
+
+	err = s.vaultRequest(ctx, http.MethodPost, "/v1/secret/data/jwt-signing-key", body)
+	if err != nil {
+		return s.Wool.Wrapf(err, "cannot store JWT signing key")
+	}
+
+	s.Wool.Debug("JWT signing key generated and stored")
+	return nil
+}
+
+func (s *Runtime) vaultRequest(ctx context.Context, method, path, body string) error {
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, s.vaultAddress+path, bodyReader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Vault-Token", s.vaultToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("vault %s %s returned %d: %s", method, path, resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func (s *Runtime) Start(ctx context.Context, req *runtimev0.StartRequest) (*runtimev0.StartResponse, error) {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+
+	s.Wool.Debug("starting")
+
+	err := s.WaitForReady(ctx)
+	if err != nil {
+		return s.Runtime.StartError(err)
+	}
+
+	err = s.enableTransit(ctx)
+	if err != nil {
+		return s.Runtime.StartError(err)
+	}
+
+	err = s.seedJWTSigningKey(ctx)
+	if err != nil {
+		return s.Runtime.StartError(err)
+	}
+
+	s.Wool.Debug("start done")
+	return s.Runtime.StartResponse()
+}
+
+func (s *Runtime) Information(ctx context.Context, req *runtimev0.InformationRequest) (*runtimev0.InformationResponse, error) {
+	return s.Runtime.InformationResponse(ctx, req)
+}
+
+func (s *Runtime) Stop(ctx context.Context, req *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+	defer s.Wool.Catch()
+	s.Wool.Debug("nothing to stop: keep environment alive")
+	return s.Runtime.StopResponse()
+}
+
+func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*runtimev0.DestroyResponse, error) {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+
+	s.Wool.Debug("destroying")
+
+	runner, err := runners.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+	if err != nil {
+		return s.Runtime.DestroyError(err)
+	}
+
+	err = runner.Shutdown(ctx)
+	if err != nil {
+		return s.Runtime.DestroyError(err)
+	}
+	return s.Runtime.DestroyResponse()
+}
+
+func (s *Runtime) Test(ctx context.Context, req *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
+	return s.Runtime.TestResponse()
+}
