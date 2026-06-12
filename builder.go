@@ -206,6 +206,9 @@ func (s *Builder) CreateEndpoints(ctx context.Context) error {
 	endpoint := s.Base.BaseEndpoint(standards.HTTP)
 	endpoint.Visibility = resources.VisibilityModule
 	s.HttpEndpoint, err = resources.NewAPI(ctx, endpoint, resources.ToHTTPAPI(httpAPI))
+	if err != nil {
+		return s.Wool.Wrapf(err, "cannot create http endpoint")
+	}
 	s.Endpoints = []*basev0.Endpoint{s.HttpEndpoint}
 	return nil
 }
