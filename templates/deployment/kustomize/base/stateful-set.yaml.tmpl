@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  serviceName: {{.Name}}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{.Name}}
+  template:
+    metadata:
+      labels:
+        app: {{.Name}}
+    spec:
+      # uid 100 = `vault` user in the official hashicorp/vault image.
+      # Without runAsNonRoot enforcement the image still runs as
+      # root unless explicitly set — making it explicit + setting
+      # fsGroup means any future PV mounts (when we leave dev mode)
+      # are writable by the vault user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: vault
+          # Pinned in lockstep with main.go's runtime image. Bump
+          # both together. `vault server -dev` matches local-mode
+          # behavior — fine for dev/staging, NOT a production
+          # configuration (in-memory storage, single unsealed node,
+          # root-token-as-API-key). Production EKS deploys should
+          # swap this overlay for a real Vault setup (Raft storage,
+          # unseal via AWS KMS, etc.) or replace with AWS Secrets
+          # Manager via an externalName service.
+          image: hashicorp/vault:1.17
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 100
+            capabilities:
+              drop:
+                - ALL
+              # Real (non-dev) Vault wants IPC_LOCK to mlock
+              # unseal keys — re-add it under capabilities.add
+              # in the prod overlay alongside dropping SKIP_SETCAP.
+              # Dev mode disables mlock so we can keep ALL dropped.
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          # SKIP_SETCAP avoids the IPC_LOCK capability requirement
+          # in pod sandboxes that don't grant it. -dev mode requires
+          # disabled mlock anyway, so this is consistent.
+          args:
+            - server
+            - -dev
+            - -dev-listen-address=0.0.0.0:8200
+          ports:
+            - name: http
+              containerPort: 8200
+          envFrom:
+            - secretRef:
+                name: {{.Name}}-secret
+          env:
+            - name: SKIP_SETCAP
+              value: "true"
+          # Modest dev-mode footprint. Production Raft mode wants
+          # ~512Mi RAM minimum; bump in overlay.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # Vault's /v1/sys/health returns:
+          #   200 — initialized, unsealed, active
+          #   429 — unsealed and standby (multi-node)
+          #   501 — not initialized
+          #   503 — sealed
+          # Dev mode is auto-init + auto-unseal so 200 is what we
+          # want during startup/readiness; the busybox `wget` ships
+          # in the image's distroless-style /usr/bin layout.
+          startupProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedok=true&uninitcode=200
+              port: 8200
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health
+              port: 8200
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: 8200
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # readOnlyRootFilesystem=true means anything that wants
+          # to write to disk needs an explicit volumeMount. Vault
+          # dev mode writes nothing persistent (in-memory store)
+          # but the binary touches /tmp during startup, and the
+          # entrypoint shell may scribble too — give it an emptyDir.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/vault
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+      # No PVC — `vault server -dev` is an in-memory store, so a
+      # PersistentVolume would be wasted. Production overlays
+      # should add volumeClaimTemplates for Raft / file storage.

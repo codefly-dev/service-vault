@@ -6,6 +6,8 @@ import (
 
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/agents/services/audit"
+	"github.com/codefly-dev/core/agents/services/upgrade"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -89,9 +91,88 @@ func (s *Builder) Build(ctx context.Context, req *builderv0.BuildRequest) (*buil
 	return s.Builder.BuildResponse()
 }
 
+// Audit scans the vault image for vulnerabilities via trivy.
+func (s *Builder) Audit(ctx context.Context, req *builderv0.AuditRequest) (*builderv0.AuditResponse, error) {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+	res, err := audit.Docker(ctx, image.FullName())
+	if err != nil {
+		return s.Builder.AuditError(err)
+	}
+	return s.Builder.AuditResponse(res.Findings, res.Outdated, res.Tool, res.Language)
+}
+
+// Upgrade reports a tag bump from the current vault image.
+func (s *Builder) Upgrade(ctx context.Context, req *builderv0.UpgradeRequest) (*builderv0.UpgradeResponse, error) {
+	defer s.Wool.Catch()
+	ctx = s.Wool.Inject(ctx)
+	res, err := upgrade.Docker(ctx, image.FullName(), upgrade.Options{
+		IncludeMajor: req.IncludeMajor,
+		DryRun:       req.DryRun,
+	})
+	if err != nil {
+		return s.Builder.UpgradeError(err)
+	}
+	return s.Builder.UpgradeResponse(res.Changes, res.LockfileDiff)
+}
+
+// Deploy emits a Kustomize-rendered StatefulSet + Service for vault.
+// Mirrors the redis/s3 shape: pull the network instance, build the
+// connection configuration, hand it to the EnvironmentVariables
+// manager, then KustomizeDeploy with templates/deployment/.
+//
+// Note on the dev-mode caveat: the templates run `vault server -dev`
+// which is in-memory and single-unsealed. That's intentionally a
+// dev/staging shape — saas-starter's prod path should swap this
+// overlay for a real Vault setup or AWS Secrets Manager.
 func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
 	defer s.Wool.Catch()
-	s.Wool.Debug("deploy: vault deployment not yet supported")
+	ctx = s.Wool.Inject(ctx)
+
+	s.Builder.LogDeployRequest(req, s.Wool.Debug)
+
+	s.EnvironmentVariables.SetRunning()
+
+	instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.NetworkMappings, s.HttpEndpoint, resources.NewPublicNetworkAccess())
+	if err != nil {
+		return s.Builder.DeployError(err)
+	}
+
+	if err := s.LoadConfiguration(ctx, req.Configuration); err != nil {
+		return s.Builder.DeployError(err)
+	}
+
+	conf := s.CreateConnectionConfiguration(ctx, instance)
+	if err := s.EnvironmentVariables.AddConfigurations(ctx, conf); err != nil {
+		return s.Builder.DeployError(err)
+	}
+
+	configs, err := s.EnvironmentVariables.Configurations()
+	if err != nil {
+		return s.Builder.DeployError(err)
+	}
+	cm, err := services.EnvsAsConfigMapData(configs...)
+	if err != nil {
+		return s.Builder.DeployError(err)
+	}
+
+	secrets, err := services.EnvsAsSecretData(s.EnvironmentVariables.Secrets()...)
+	if err != nil {
+		return s.Builder.DeployError(err)
+	}
+
+	params := services.DeploymentParameters{
+		ConfigMap: cm,
+		SecretMap: secrets,
+	}
+
+	k, err := s.Builder.KubernetesDeploymentRequest(ctx, req)
+	if err != nil {
+		return s.Builder.DeployError(err)
+	}
+	if err := s.Builder.KustomizeDeploy(ctx, req.Environment, k, deploymentFS, params); err != nil {
+		return s.Builder.DeployError(err)
+	}
 	return s.Builder.DeployResponse()
 }
 
@@ -137,3 +218,6 @@ func (s *Builder) Communicate(stream builderv0.Builder_CommunicateServer) error 
 
 //go:embed templates/factory
 var factoryFS embed.FS
+
+//go:embed templates/deployment
+var deploymentFS embed.FS
