@@ -27,7 +27,7 @@ type Settings struct {
 	TransitKey string `yaml:"transit-key"`
 }
 
-var image = &resources.DockerImage{Name: "hashicorp/vault", Tag: "1.17"}
+var image = &resources.DockerImage{Name: "hashicorp/vault", Tag: "1.21"}
 
 type Service struct {
 	*services.Base
