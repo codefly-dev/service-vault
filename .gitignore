@@ -1,0 +1,6 @@
+.idea
+go.work*
+dist/
+
+# Compiled agent binary — never track binaries.
+/service-vault
