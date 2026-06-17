@@ -16,7 +16,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
-	runners "github.com/codefly-dev/core/runners/base"
+	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -24,7 +24,7 @@ type Runtime struct {
 	services.RuntimeServer
 	*Service
 
-	runnerEnvironment *runners.DockerEnvironment
+	runnerEnvironment *dockerrun.DockerEnvironment
 	vaultPort         uint16
 	vaultAddress      string
 }
@@ -123,7 +123,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	s.vaultAddress = hostInstance.Address
 
 	// Docker
-	runner, err := runners.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
@@ -309,7 +309,7 @@ func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*
 
 	s.Wool.Debug("destroying")
 
-	runner, err := runners.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
 	if err != nil {
 		return s.Runtime.DestroyError(err)
 	}
