@@ -128,7 +128,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		return s.Runtime.InitError(err)
 	}
 
-	runner.WithOutput(s.Wool)
+	runner.WithOutput(newVaultLogWriter(s.Wool))
 	runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
 	runner.WithEnvironmentVariables(ctx,
 		resources.Env("VAULT_DEV_ROOT_TOKEN_ID", s.vaultToken),
