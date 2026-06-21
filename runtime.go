@@ -27,6 +27,10 @@ type Runtime struct {
 	runnerEnvironment *dockerrun.DockerEnvironment
 	vaultPort         uint16
 	vaultAddress      string
+
+	// nixRuntime is set instead of runnerEnvironment when the caller requests
+	// RuntimeContextNix — vault runs natively from a nix-provisioned binary.
+	nixRuntime *nixVault
 }
 
 func NewRuntime() *Runtime {
@@ -122,26 +126,39 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	}
 	s.vaultAddress = hostInstance.Address
 
-	// Docker
-	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
-	if err != nil {
-		return s.Runtime.InitError(err)
-	}
-
-	runner.WithOutput(newVaultLogWriter(s.Wool))
-	runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
-	runner.WithEnvironmentVariables(ctx,
-		resources.Env("VAULT_DEV_ROOT_TOKEN_ID", s.vaultToken),
-		resources.Env("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200"),
-		resources.Env("SKIP_SETCAP", "true"),
-	)
-
-	s.runnerEnvironment = runner
-
-	w.Debug("init for runner environment: will start container")
-	err = s.runnerEnvironment.Init(ctx)
-	if err != nil {
-		return s.Runtime.InitError(err)
+	// Nix runtime: run `vault server -dev` natively from a nix-provisioned binary
+	// instead of a Docker container — selected when the caller requests
+	// RuntimeContextNix (e.g. a host without Docker). vault binds the assigned
+	// port directly, so vaultAddress (used by the transit/JWT seeding below) is
+	// unchanged.
+	if rc := req.GetRuntimeContext(); rc != nil && rc.Kind == resources.RuntimeContextNix {
+		s.Infof("using nix runtime for vault on port %d", instance.Port)
+		nixv, errNix := newNixVault(ctx, s.Location, uint16(instance.Port), s.vaultToken, newVaultLogWriter(s.Wool))
+		if errNix != nil {
+			return s.Runtime.InitError(errNix)
+		}
+		if errNix = nixv.Init(ctx); errNix != nil {
+			return s.Runtime.InitError(errNix)
+		}
+		s.nixRuntime = nixv
+	} else {
+		// Docker
+		runner, errDocker := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+		if errDocker != nil {
+			return s.Runtime.InitError(errDocker)
+		}
+		runner.WithOutput(newVaultLogWriter(s.Wool))
+		runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
+		runner.WithEnvironmentVariables(ctx,
+			resources.Env("VAULT_DEV_ROOT_TOKEN_ID", s.vaultToken),
+			resources.Env("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200"),
+			resources.Env("SKIP_SETCAP", "true"),
+		)
+		s.runnerEnvironment = runner
+		w.Debug("init for runner environment: will start container")
+		if errDocker = s.runnerEnvironment.Init(ctx); errDocker != nil {
+			return s.Runtime.InitError(errDocker)
+		}
 	}
 
 	w.Debug("init successful")
@@ -308,6 +325,14 @@ func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*
 	ctx = s.Wool.Inject(ctx)
 
 	s.Wool.Debug("destroying")
+
+	// Nix runtime: terminate the native vault process; there is no container.
+	if s.nixRuntime != nil {
+		if err := s.nixRuntime.Stop(ctx); err != nil {
+			return s.Runtime.DestroyError(err)
+		}
+		return s.Runtime.DestroyResponse()
+	}
 
 	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
 	if err != nil {
