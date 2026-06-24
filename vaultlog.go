@@ -13,7 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/core/woollog"
-	"github.com/codefly-dev/gortk"
+	"github.com/mind-build/gortk"
 )
 
 var vaultLog = gortk.LogSpec{
