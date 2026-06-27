@@ -147,6 +147,10 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		if errDocker != nil {
 			return s.Runtime.InitError(errDocker)
 		}
+		// vault dev-mode is stateless — mark the container ephemeral so a
+		// SIGKILL'd run (which skips Stop) gets its vault reaped by the next
+		// run's startup sweep instead of lingering and holding its port.
+		runner.WithEphemeral()
 		runner.WithOutput(newVaultLogWriter(s.Wool))
 		runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
 		runner.WithEnvironmentVariables(ctx,
@@ -314,9 +318,37 @@ func (s *Runtime) Information(ctx context.Context, req *runtimev0.InformationReq
 	return s.Runtime.InformationResponse(ctx, req)
 }
 
+// teardown fully stops vault's runtime — the native nix process or the docker
+// container. Unlike most infra agents, vault does NOT keep its environment
+// alive for reuse: dev-mode is in-memory and stateless, so there is nothing to
+// preserve, and a lingering vault only orphans its port and bleeds stale state
+// into the next run (the failure mode that makes a later health probe fail).
+// Shared by Stop and Destroy.
+func (s *Runtime) teardown(ctx context.Context) error {
+	if s.nixRuntime != nil {
+		s.Wool.Debug("stopping nix vault process")
+		return s.nixRuntime.Stop(ctx)
+	}
+	if s.runnerEnvironment != nil {
+		s.Wool.Debug("shutting down vault container")
+		return s.runnerEnvironment.Shutdown(ctx)
+	}
+	// No live handle (e.g. Destroy on a freshly loaded agent that never ran
+	// Init): reconstruct the docker env by name and shut it down.
+	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+	if err != nil {
+		return err
+	}
+	return runner.Shutdown(ctx)
+}
+
 func (s *Runtime) Stop(ctx context.Context, req *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
 	defer s.Wool.Catch()
-	s.Wool.Debug("nothing to stop: keep environment alive")
+	ctx = s.Wool.Inject(ctx)
+
+	if err := s.teardown(ctx); err != nil {
+		return s.Runtime.StopError(err)
+	}
 	return s.Runtime.StopResponse()
 }
 
@@ -326,21 +358,7 @@ func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*
 
 	s.Wool.Debug("destroying")
 
-	// Nix runtime: terminate the native vault process; there is no container.
-	if s.nixRuntime != nil {
-		if err := s.nixRuntime.Stop(ctx); err != nil {
-			return s.Runtime.DestroyError(err)
-		}
-		return s.Runtime.DestroyResponse()
-	}
-
-	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
-	if err != nil {
-		return s.Runtime.DestroyError(err)
-	}
-
-	err = runner.Shutdown(ctx)
-	if err != nil {
+	if err := s.teardown(ctx); err != nil {
 		return s.Runtime.DestroyError(err)
 	}
 	return s.Runtime.DestroyResponse()

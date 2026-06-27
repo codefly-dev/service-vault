@@ -131,8 +131,18 @@ func (n *nixVault) startServer(ctx context.Context) error {
 // waitReady polls vault's health endpoint until it responds. Any HTTP status
 // counts as ready: dev mode returns 200 (initialized + unsealed + active), but
 // a reachable endpoint at all proves the server is up.
+//
+// It also watches the server process: a `vault server -dev` that exits right
+// after launch (port already bound, bad flag, crash) would otherwise look
+// identical to a slow start — the probe just sees "connection refused" for the
+// whole 30s and reports a misleading timeout. Detecting the dead process turns
+// that into an immediate, accurate error.
 func (n *nixVault) waitReady(ctx context.Context) error {
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/sys/health", n.port)
+	addr := fmt.Sprintf("127.0.0.1:%d", n.port)
+	url := fmt.Sprintf("http://%s/v1/sys/health", addr)
+	if n.out != nil {
+		fmt.Fprintf(n.out, "waiting for vault readiness on %s\n", addr)
+	}
 	client := &http.Client{Timeout: 1 * time.Second}
 	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
@@ -144,6 +154,14 @@ func (n *nixVault) waitReady(ctx context.Context) error {
 			return nil
 		}
 		lastErr = err
+		// If the process is already gone there is nothing left to wait for —
+		// fail now with a clear cause instead of polling a dead address.
+		if n.proc != nil {
+			if running, rerr := n.proc.IsRunning(ctx); rerr == nil && !running {
+				return fmt.Errorf("vault process exited before binding %s "+
+					"(check the vault log above for the bind address / error): %w", addr, lastErr)
+			}
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("vault did not become ready on %s: %w", url, lastErr)
