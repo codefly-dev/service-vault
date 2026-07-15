@@ -11,9 +11,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/standards"
-	"github.com/codefly-dev/core/templates"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -30,43 +28,21 @@ func NewBuilder() *Builder {
 
 func (s *Builder) Load(ctx context.Context, req *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
 	defer s.Wool.Catch()
-	ctx = s.Wool.Inject(ctx)
 
-	err := s.Base.Load(ctx, req.Identity, s.Settings)
-	if err != nil {
-		return nil, err
-	}
-
-	s.Wool.Debug("base loaded", wool.Field("identity", s.Identity))
-
-	if req.DisableCatch {
-		s.Wool.DisableCatch()
-	}
-
-	requirements.Localize(s.Location)
-
-	if req.CreationMode != nil {
-		s.Builder.CreationMode = req.CreationMode
-		s.Builder.GettingStarted, err = templates.ApplyTemplateFrom(ctx, shared.Embed(factoryFS), "templates/factory/GETTING_STARTED.md", s.Information)
-		if err != nil {
-			return nil, err
-		}
-		return s.Builder.LoadResponse()
-	}
-
-	s.Endpoints, err = s.Base.Service.LoadEndpoints(ctx)
-	if err != nil {
-		return s.Builder.LoadError(err)
-	}
-
-	s.HttpEndpoint, err = resources.FindHTTPEndpoint(ctx, s.Endpoints)
-	if err != nil {
-		return s.Builder.LoadError(err)
-	}
-
-	s.Wool.Debug("endpoint", wool.Field("http", s.HttpEndpoint))
-
-	return s.Builder.LoadResponse()
+	return s.Builder.LoadService(ctx, req, services.BuilderLoad{
+		Settings:         s.Settings,
+		Requirements:     requirements,
+		FactoryTemplates: factoryFS,
+		ResolveEndpoints: func(ctx context.Context, endpoints []*basev0.Endpoint) error {
+			endpoint, err := resources.FindHTTPEndpoint(ctx, endpoints)
+			if err != nil {
+				return err
+			}
+			s.HttpEndpoint = endpoint
+			s.Wool.Debug("endpoint", wool.Field("http", endpoint))
+			return nil
+		},
+	})
 }
 
 func (s *Builder) Init(ctx context.Context, req *builderv0.InitRequest) (*builderv0.InitResponse, error) {
@@ -128,52 +104,22 @@ func (s *Builder) Upgrade(ctx context.Context, req *builderv0.UpgradeRequest) (*
 func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
+	s.Base.SetDockerImage(image)
 
-	s.Builder.LogDeployRequest(req, s.Wool.Debug)
-
-	s.EnvironmentVariables.SetRunning()
-
-	instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.NetworkMappings, s.HttpEndpoint, resources.NewPublicNetworkAccess())
-	if err != nil {
-		return s.Builder.DeployError(err)
-	}
-
-	if err := s.LoadConfiguration(ctx, req.Configuration); err != nil {
-		return s.Builder.DeployError(err)
-	}
-
-	conf := s.CreateConnectionConfiguration(ctx, instance)
-	if err := s.EnvironmentVariables.AddConfigurations(ctx, conf); err != nil {
-		return s.Builder.DeployError(err)
-	}
-
-	configs, err := s.EnvironmentVariables.Configurations()
-	if err != nil {
-		return s.Builder.DeployError(err)
-	}
-	cm, err := services.EnvsAsConfigMapData(configs...)
-	if err != nil {
-		return s.Builder.DeployError(err)
-	}
-
-	secrets, err := services.EnvsAsSecretData(s.EnvironmentVariables.Secrets()...)
-	if err != nil {
-		return s.Builder.DeployError(err)
-	}
-
-	params := services.DeploymentParameters{
-		ConfigMap: cm,
-		SecretMap: secrets,
-	}
-
-	k, err := s.Builder.KubernetesDeploymentRequest(ctx, req)
-	if err != nil {
-		return s.Builder.DeployError(err)
-	}
-	if err := s.Builder.KustomizeDeploy(ctx, req.Environment, k, deploymentFS, params); err != nil {
-		return s.Builder.DeployError(err)
-	}
-	return s.Builder.DeployResponse()
+	return s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
+		EnvironmentVariables: s.EnvironmentVariables,
+		Templates:            deploymentFS,
+		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
+			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewPublicNetworkAccess())
+			if err != nil {
+				return err
+			}
+			if err = s.LoadConfiguration(ctx, req.GetConfiguration()); err != nil {
+				return err
+			}
+			return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(ctx, instance))
+		},
+	})
 }
 
 func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {

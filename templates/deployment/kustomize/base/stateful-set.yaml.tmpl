@@ -29,15 +29,15 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: vault
-          # Pinned in lockstep with main.go's runtime image. Bump
-          # both together. `vault server -dev` matches local-mode
+          # Supplied by main.go's image declaration, including its digest.
+          # `vault server -dev` matches local-mode
           # behavior — fine for dev/staging, NOT a production
           # configuration (in-memory storage, single unsealed node,
           # root-token-as-API-key). Production EKS deploys should
           # swap this overlay for a real Vault setup (Raft storage,
           # unseal via AWS KMS, etc.) or replace with AWS Secrets
           # Manager via an externalName service.
-          image: hashicorp/vault:1.17
+          image: {{ .Image }}
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

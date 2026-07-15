@@ -28,7 +28,11 @@ type Settings struct {
 	TransitKey string `yaml:"transit-key"`
 }
 
-var image = &resources.DockerImage{Name: "hashicorp/vault", Tag: "1.21"}
+var image = &resources.DockerImage{
+	Name:   "hashicorp/vault",
+	Tag:    "1.21.4",
+	Digest: "sha256:4e33b126a59c0c333b76fb4e894722462659a6bec7c48c9ee8cea56fccfd2569",
+}
 
 type Service struct {
 	*services.Base

@@ -41,32 +41,20 @@ func NewRuntime() *Runtime {
 
 func (s *Runtime) Load(ctx context.Context, req *runtimev0.LoadRequest) (*runtimev0.LoadResponse, error) {
 	defer s.Wool.Catch()
-	ctx = s.Wool.Inject(ctx)
 
-	s.Runtime.LogLoadRequest(req)
-
-	err := s.Base.Load(ctx, req.Identity, s.Settings)
-	if err != nil {
-		return s.Runtime.LoadErrorf(err, "loading base")
-	}
-
-	s.Runtime.SetEnvironment(req.Environment)
-
-	requirements.Localize(s.Location)
-
-	s.Endpoints, err = s.Base.Service.LoadEndpoints(ctx)
-	if err != nil {
-		return s.Runtime.LoadErrorf(err, "cannot load endpoints")
-	}
-
-	s.Wool.Debug("endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(s.Endpoints)))
-
-	s.HttpEndpoint, err = resources.FindHTTPEndpoint(ctx, s.Endpoints)
-	if err != nil {
-		return s.Runtime.LoadErrorf(err, "cannot find HTTP endpoint")
-	}
-
-	return s.Runtime.LoadResponse()
+	return s.Runtime.LoadService(ctx, req, services.RuntimeLoad{
+		Settings:     s.Settings,
+		Requirements: requirements,
+		ResolveEndpoints: func(ctx context.Context, endpoints []*basev0.Endpoint) error {
+			s.Wool.Debug("endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
+			endpoint, err := resources.FindHTTPEndpoint(ctx, endpoints)
+			if err != nil {
+				return s.Wool.Wrapf(err, "cannot find HTTP endpoint")
+			}
+			s.HttpEndpoint = endpoint
+			return nil
+		},
+	})
 }
 
 func callingContext() *basev0.NetworkAccess {
