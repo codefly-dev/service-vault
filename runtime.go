@@ -133,7 +133,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	// unchanged.
 	if rc := req.GetRuntimeContext(); rc != nil && rc.Kind == resources.RuntimeContextNix {
 		s.Infof("using nix runtime for vault on port %d", instance.Port)
-		nixv, errNix := newNixVault(ctx, s.Location, uint16(instance.Port), s.vaultToken, newVaultLogWriter(s.Wool))
+		nixv, errNix := newNixVault(ctx, s.Location, uint16(instance.Port), s.vaultToken, newVaultLogWriter(s.Wool, s.vaultToken))
 		if errNix != nil {
 			return s.Runtime.InitError(errNix)
 		}
@@ -151,7 +151,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		// SIGKILL'd run (which skips Stop) gets its vault reaped by the next
 		// run's startup sweep instead of lingering and holding its port.
 		runner.WithEphemeral()
-		runner.WithOutput(newVaultLogWriter(s.Wool))
+		runner.WithOutput(newVaultLogWriter(s.Wool, s.vaultToken))
 		runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
 		runner.WithEnvironmentVariables(ctx,
 			resources.Env("VAULT_DEV_ROOT_TOKEN_ID", s.vaultToken),

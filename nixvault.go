@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/base"
 )
 
@@ -108,14 +109,13 @@ func (n *nixVault) resolveStore() error {
 // startServer launches `vault server -dev` bound to loopback on the assigned
 // port with the configured root token. Dev mode is in-memory + auto-unsealed.
 func (n *nixVault) startServer(ctx context.Context) error {
-	proc, err := n.env.NewProcess(filepath.Join(n.binDir, "vault"),
-		"server", "-dev",
-		"-dev-root-token-id="+n.token,
-		fmt.Sprintf("-dev-listen-address=127.0.0.1:%d", n.port),
-	)
+	proc, err := n.env.NewProcess(filepath.Join(n.binDir, "vault"), n.serverArgs()...)
 	if err != nil {
 		return err
 	}
+	// Vault supports VAULT_DEV_ROOT_TOKEN_ID directly. Environment injection
+	// keeps the root token out of process listings and diagnostic argv dumps.
+	proc.WithEnvironmentVariables(ctx, resources.Env("VAULT_DEV_ROOT_TOKEN_ID", n.token))
 	if n.out != nil {
 		proc.WithOutput(n.out)
 	}
@@ -126,6 +126,14 @@ func (n *nixVault) startServer(ctx context.Context) error {
 	}
 	n.proc = proc
 	return nil
+}
+
+func (n *nixVault) serverArgs() []string {
+	return []string{
+		"server",
+		"-dev",
+		fmt.Sprintf("-dev-listen-address=127.0.0.1:%d", n.port),
+	}
 }
 
 // waitReady polls vault's health endpoint until it responds. Any HTTP status

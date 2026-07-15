@@ -9,7 +9,10 @@ package main
 // the mapped severity (the timestamp is dropped — Wool stamps its own).
 
 import (
+	"bytes"
 	"io"
+	"strings"
+	"sync"
 
 	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/core/woollog"
@@ -25,6 +28,44 @@ var vaultLog = gortk.LogSpec{
 	DefaultLevel: "info",
 }
 
-func newVaultLogWriter(w *wool.Wool) io.Writer {
-	return woollog.MustNew(w, vaultLog)
+func newVaultLogWriter(w *wool.Wool, secrets ...string) io.Writer {
+	return newLineRedactingWriter(woollog.MustNew(w, vaultLog), secrets...)
+}
+
+type lineRedactingWriter struct {
+	dst     io.Writer
+	secrets []string
+	buf     []byte
+	mu      sync.Mutex
+}
+
+func newLineRedactingWriter(dst io.Writer, secrets ...string) io.Writer {
+	filtered := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		if secret != "" {
+			filtered = append(filtered, secret)
+		}
+	}
+	return &lineRedactingWriter{dst: dst, secrets: filtered}
+}
+
+func (w *lineRedactingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := string(w.buf[:i])
+		w.buf = w.buf[i+1:]
+		for _, secret := range w.secrets {
+			line = strings.ReplaceAll(line, secret, "****")
+		}
+		if _, err := io.WriteString(w.dst, line+"\n"); err != nil {
+			return len(p), err
+		}
+	}
+	return len(p), nil
 }
