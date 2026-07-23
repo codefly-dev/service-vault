@@ -1,0 +1,29 @@
+version: 2
+
+project_name: service-vault
+
+builds:
+  - id: darwin
+    binary: service-vault
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+  - id: linux
+    binary: service-vault
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+archives:
+  - id: default
+    # Must match core's downloader URL: service-{name}_{version}_{os}_{arch}.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
