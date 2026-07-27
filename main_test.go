@@ -25,6 +25,17 @@ func TestCreateToRunDocker(t *testing.T) {
 	testCreateToRun(t, resources.NewRuntimeContextFree())
 }
 
+func TestVaultImagePin(t *testing.T) {
+	require.Equal(t, "hashicorp/vault", image.Name)
+	require.Equal(t, "2.0.3", image.Tag)
+	require.Equal(t, "sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54", image.Digest)
+	require.Equal(t, "hashicorp/vault@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54", image.FullName())
+}
+
+func TestAgentVersion(t *testing.T) {
+	require.Equal(t, "0.0.16", agent.Version)
+}
+
 // TestCreateToRunNix runs the SAME full lifecycle against the nix runtime —
 // the Docker-free backend used on hosts without Docker. Requires nix.
 //

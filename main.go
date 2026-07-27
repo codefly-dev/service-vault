@@ -30,8 +30,8 @@ type Settings struct {
 
 var image = &resources.DockerImage{
 	Name:   "hashicorp/vault",
-	Tag:    "1.21.4",
-	Digest: "sha256:4e33b126a59c0c333b76fb4e894722462659a6bec7c48c9ee8cea56fccfd2569",
+	Tag:    "2.0.3",
+	Digest: "sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54",
 }
 
 type Service struct {
