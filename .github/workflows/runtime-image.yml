@@ -41,4 +41,4 @@ jobs:
       - name: Make image public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PATCH "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/service-vault-runtime/visibility" -f visibility=public
+        run: gh api --method PATCH "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/service-vault-runtime" -f visibility=public
