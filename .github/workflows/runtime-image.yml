@@ -39,6 +39,15 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ github.ref_name }}
 
       - name: Make image public
+        # GitHub Packages' visibility API requires a classic PAT. Keep the
+        # repository-scoped GITHUB_TOKEN for publishing and use the org-owned
+        # credential only for this package-administration boundary.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PATCH "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/service-vault-runtime" -f visibility=public
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh api --method PATCH \
+            "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/service-vault-runtime" \
+            -f visibility=public
+          test "$(gh api \
+            "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/service-vault-runtime" \
+            --jq .visibility)" = "public"
