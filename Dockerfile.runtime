@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1.19
+
+ARG VAULT_COMMIT=7193f9a48ff6093ca61b3b627a8671e770428ba6
+ARG VAULT_VERSION=2.0.3
+
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS source
+ARG VAULT_COMMIT
+ARG VAULT_VERSION
+RUN apk add --no-cache git \
+    && git init /src \
+    && git -C /src remote add origin https://github.com/hashicorp/vault.git \
+    && git -C /src fetch --depth=1 origin "${VAULT_COMMIT}" \
+    && git -C /src checkout --detach FETCH_HEAD \
+    && test "$(cat /src/version/VERSION)" = "${VAULT_VERSION}"
+
+FROM --platform=$BUILDPLATFORM node:20-alpine3.22@sha256:8f47899606d000b0704e992f927fe7335adcd0d6c98851600072fb6e14a13e60 AS ui
+COPY --from=source /src /src
+WORKDIR /src/ui
+RUN corepack enable \
+    && pnpm install --frozen-lockfile \
+    && pnpm rebuild node-sass \
+    && pnpm run build
+
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+ARG VAULT_COMMIT
+ARG VAULT_VERSION
+RUN apk add --no-cache bash git
+COPY --from=ui /src /src
+WORKDIR /src
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go get google.golang.org/grpc@v1.82.1 \
+    && go mod download \
+    && test "$(go list -m -f '{{.Version}}' google.golang.org/grpc)" = "v1.82.1"
+ARG TARGETARCH
+ARG TARGETOS
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    build_date="$(git show -s --format=%cI HEAD)" \
+    && CGO_ENABLED=0 GOARCH="${TARGETARCH}" GOOS="${TARGETOS}" \
+       go build -buildvcs=false -tags "vault ui" \
+       -ldflags "-X github.com/hashicorp/vault/version.GitCommit=${VAULT_COMMIT}+codefly.1 -X github.com/hashicorp/vault/version.BuildDate=${build_date} -X github.com/hashicorp/vault/version.Version=${VAULT_VERSION}" \
+       -o bin/vault .
+RUN go version -m bin/vault | grep -F "go1.26.5" \
+    && go version -m bin/vault | grep -F "google.golang.org/grpc" | grep -F "v1.82.1" \
+    && go version -m bin/vault | grep -F "github.com/hashicorp/vault/version.Version=${VAULT_VERSION}"
+
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+ARG VAULT_COMMIT
+ARG VAULT_VERSION
+LABEL org.opencontainers.image.description="HashiCorp Vault runtime rebuilt with patched Go dependencies" \
+      org.opencontainers.image.licenses="BUSL-1.1" \
+      org.opencontainers.image.revision="${VAULT_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/codefly-dev/service-vault" \
+      org.opencontainers.image.title="Codefly Vault runtime" \
+      org.opencontainers.image.version="${VAULT_VERSION}"
+ENV NAME=vault
+RUN addgroup vault \
+    && adduser -S -G vault vault \
+    && apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates dumb-init libcap su-exec tzdata zlib \
+    && mkdir -p /licenses /vault/config /vault/file /vault/logs \
+    && chown -R vault:vault /vault
+COPY --from=source /src/LICENSE /licenses/LICENSE
+COPY --from=source /src/.release/docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --from=builder /src/bin/vault /bin/vault
+VOLUME /vault/file
+VOLUME /vault/logs
+EXPOSE 8200
+ENTRYPOINT ["docker-entrypoint.sh"]
+USER vault
+CMD ["server", "-dev"]
