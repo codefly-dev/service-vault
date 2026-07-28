@@ -46,8 +46,6 @@ type nixVault struct {
 	// only by Stop.
 	serverCtx    context.Context
 	serverCancel context.CancelFunc
-	// binDir is the absolute nix store bin dir holding the vault binary.
-	binDir string
 }
 
 // newNixVault materializes the embedded flake under baseDir/nix and prepares a
@@ -77,14 +75,11 @@ func newNixVault(ctx context.Context, baseDir string, port uint16, token string,
 	}, nil
 }
 
-// Init materializes the nix env, locates the vault binary, launches `vault
-// server -dev`, and waits for the HTTP health endpoint to answer.
+// Init materializes the nix env, launches `vault server -dev`, and waits for
+// the HTTP health endpoint to answer.
 func (n *nixVault) Init(ctx context.Context) error {
 	if err := n.env.Init(ctx); err != nil {
 		return fmt.Errorf("materialize nix vault env: %w", err)
-	}
-	if err := n.resolveStore(); err != nil {
-		return err
 	}
 	if err := n.startServer(ctx); err != nil {
 		return err
@@ -92,24 +87,10 @@ func (n *nixVault) Init(ctx context.Context) error {
 	return n.waitReady(ctx)
 }
 
-// resolveStore locates the nix-store vault binary by absolute path so we run the
-// nix-built vault even if a system vault shadows PATH.
-func (n *nixVault) resolveStore() error {
-	matches, err := filepath.Glob("/nix/store/*-vault-*/bin/vault")
-	if err != nil {
-		return fmt.Errorf("glob nix vault: %w", err)
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("no nix vault with bin/vault found in /nix/store (materialization may have failed)")
-	}
-	n.binDir = filepath.Dir(matches[0])
-	return nil
-}
-
 // startServer launches `vault server -dev` bound to loopback on the assigned
 // port with the configured root token. Dev mode is in-memory + auto-unsealed.
 func (n *nixVault) startServer(ctx context.Context) error {
-	proc, err := n.env.NewProcess(filepath.Join(n.binDir, "vault"), n.serverArgs()...)
+	proc, err := n.env.NewProcess("vault", n.serverArgs()...)
 	if err != nil {
 		return err
 	}
