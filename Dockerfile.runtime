@@ -1,25 +1,32 @@
 # syntax=docker/dockerfile:1.19
 
-ARG VAULT_COMMIT=7193f9a48ff6093ca61b3b627a8671e770428ba6
-ARG VAULT_VERSION=2.0.3
+ARG VAULT_COMMIT=ffe7023c481dc1ea2d8550bbaca8d85f8e611e0b
+ARG VAULT_SECURITY_PATCH=4bef290527ac83d9114228edcf74424e222be76a
+ARG VAULT_VERSION=1.21.4
 
 FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS source
 ARG VAULT_COMMIT
+ARG VAULT_SECURITY_PATCH
 ARG VAULT_VERSION
 RUN apk add --no-cache git \
     && git init /src \
     && git -C /src remote add origin https://github.com/hashicorp/vault.git \
     && git -C /src fetch --depth=1 origin "${VAULT_COMMIT}" \
     && git -C /src checkout --detach FETCH_HEAD \
-    && test "$(cat /src/version/VERSION)" = "${VAULT_VERSION}"
+    && test "$(cat /src/version/VERSION)" = "${VAULT_VERSION}" \
+    && git -C /src fetch --depth=2 origin "${VAULT_SECURITY_PATCH}" \
+    && git -C /src diff "${VAULT_SECURITY_PATCH}^" "${VAULT_SECURITY_PATCH}" -- '*.go' > /tmp/vault-security.patch \
+    && test -s /tmp/vault-security.patch \
+    && git -C /src apply --check /tmp/vault-security.patch \
+    && git -C /src apply /tmp/vault-security.patch
 
 FROM --platform=$BUILDPLATFORM node:20-alpine3.22@sha256:8f47899606d000b0704e992f927fe7335adcd0d6c98851600072fb6e14a13e60 AS ui
 COPY --from=source /src /src
 WORKDIR /src/ui
 RUN corepack enable \
-    && pnpm install --frozen-lockfile \
-    && pnpm rebuild node-sass \
-    && pnpm run build
+    && yarn install --immutable \
+    && npm rebuild node-sass \
+    && yarn run build
 
 FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
 ARG VAULT_COMMIT
@@ -28,9 +35,28 @@ RUN apk add --no-cache bash git
 COPY --from=ui /src /src
 WORKDIR /src
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go get google.golang.org/grpc@v1.82.1 \
-    && go mod download \
-    && test "$(go list -m -f '{{.Version}}' google.golang.org/grpc)" = "v1.82.1"
+    go get \
+      cloud.google.com/go/cloudsqlconn@v1.20.2 \
+      github.com/apache/thrift@v0.23.0 \
+      github.com/go-jose/go-jose/v3@v3.0.5 \
+      github.com/go-jose/go-jose/v4@v4.1.4 \
+      github.com/hashicorp/go-plugin@v1.7.0 \
+      github.com/hashicorp/go-secure-stdlib/plugincontainer@v0.5.0 \
+      github.com/jackc/pgx/v5@v5.9.0 \
+      github.com/microsoft/kiota-http-go@v1.5.5 \
+      github.com/moby/moby/api@v1.54.0 \
+      github.com/moby/moby/client@v0.3.0 \
+      go.opentelemetry.io/otel@v1.43.0 \
+      go.opentelemetry.io/otel/sdk@v1.43.0 \
+      golang.org/x/crypto@v0.52.0 \
+      golang.org/x/net@v0.55.0 \
+      google.golang.org/grpc@v1.82.1 \
+    && mkdir /tmp/docker-unused \
+    && cd /tmp/docker-unused \
+    && go mod init github.com/docker/docker \
+    && cd /src \
+    && go mod edit -replace=github.com/docker/docker=/tmp/docker-unused \
+    && go mod download
 ARG TARGETARCH
 ARG TARGETOS
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -41,6 +67,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
        -ldflags "-X github.com/hashicorp/vault/version.GitCommit=${VAULT_COMMIT}+codefly.1 -X github.com/hashicorp/vault/version.BuildDate=${build_date} -X github.com/hashicorp/vault/version.Version=${VAULT_VERSION}" \
        -o bin/vault .
 RUN go version -m bin/vault | grep -F "go1.26.5" \
+    && ! go version -m bin/vault | grep -F "github.com/docker/docker" \
+    && go version -m bin/vault | grep -F "github.com/moby/moby/client" | grep -F "v0.3.0" \
     && go version -m bin/vault | grep -F "google.golang.org/grpc" | grep -F "v1.82.1" \
     && go version -m bin/vault | grep -F "github.com/hashicorp/vault/version.Version=${VAULT_VERSION}"
 
@@ -67,5 +95,4 @@ VOLUME /vault/file
 VOLUME /vault/logs
 EXPOSE 8200
 ENTRYPOINT ["docker-entrypoint.sh"]
-USER vault
 CMD ["server", "-dev"]

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path"
@@ -34,6 +35,13 @@ func TestVaultImagePin(t *testing.T) {
 
 func TestAgentVersion(t *testing.T) {
 	require.Equal(t, "0.0.16", agent.Version)
+}
+
+func TestVaultImageAudit(t *testing.T) {
+	response, err := NewBuilder().Audit(context.Background(), &builderv0.AuditRequest{FailOnVuln: true})
+	require.NoError(t, err)
+	require.Equal(t, builderv0.AuditStatus_CLEAN, response.GetState().GetState())
+	require.Empty(t, response.GetFindings())
 }
 
 // TestCreateToRunNix runs the SAME full lifecycle against the nix runtime —
@@ -143,4 +151,10 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.NoError(t, err)
 	defer healthResp.Body.Close()
 	require.Equal(t, http.StatusOK, healthResp.StatusCode)
+
+	var health struct {
+		Version string `json:"version"`
+	}
+	require.NoError(t, json.NewDecoder(healthResp.Body).Decode(&health))
+	require.Equal(t, "1.21.4", health.Version)
 }
