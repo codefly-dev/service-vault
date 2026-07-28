@@ -67,4 +67,5 @@ VOLUME /vault/file
 VOLUME /vault/logs
 EXPOSE 8200
 ENTRYPOINT ["docker-entrypoint.sh"]
+USER vault
 CMD ["server", "-dev"]

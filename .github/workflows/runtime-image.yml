@@ -43,6 +43,8 @@ jobs:
         run: |
           docker logout ghcr.io
           docker buildx imagetools inspect "${IMAGE}@${{ steps.build.outputs.digest }}"
+          docker run --rm "${IMAGE}@${{ steps.build.outputs.digest }}" version | grep -F 'Vault v2.0.3'
+          test "$(docker image inspect "${IMAGE}@${{ steps.build.outputs.digest }}" --format '{{.Config.User}}')" = vault
 
       - name: Audit image
         run: >-
