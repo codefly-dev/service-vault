@@ -27,10 +27,10 @@ func TestCreateToRunDocker(t *testing.T) {
 }
 
 func TestVaultImagePin(t *testing.T) {
-	require.Equal(t, "hashicorp/vault", image.Name)
-	require.Equal(t, "2.0.3", image.Tag)
-	require.Equal(t, "sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54", image.Digest)
-	require.Equal(t, "hashicorp/vault@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54", image.FullName())
+	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime", image.Name)
+	require.Equal(t, "runtime-v2.0.3-patched.2", image.Tag)
+	require.Equal(t, "sha256:4763fafc39e991f037e3fca1c05999009b0322e5df3e0ba92db6906cfffca2bc", image.Digest)
+	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:4763fafc39e991f037e3fca1c05999009b0322e5df3e0ba92db6906cfffca2bc", image.FullName())
 }
 
 func TestAgentVersion(t *testing.T) {
@@ -40,7 +40,7 @@ func TestAgentVersion(t *testing.T) {
 func TestVaultImageAudit(t *testing.T) {
 	response, err := NewBuilder().Audit(context.Background(), &builderv0.AuditRequest{FailOnVuln: true})
 	require.NoError(t, err)
-	require.Equal(t, builderv0.AuditStatus_CLEAN, response.GetState().GetState())
+	require.Equal(t, builderv0.AuditStatus_CLEAN, response.GetState().GetState(), "message: %s; findings: %v", response.GetState().GetMessage(), response.GetFindings())
 	require.Empty(t, response.GetFindings())
 }
 
@@ -156,5 +156,5 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 		Version string `json:"version"`
 	}
 	require.NoError(t, json.NewDecoder(healthResp.Body).Decode(&health))
-	require.Equal(t, "1.21.4", health.Version)
+	require.Equal(t, "2.0.3", health.Version)
 }

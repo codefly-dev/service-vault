@@ -39,14 +39,6 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}:${{ github.ref_name }}
 
-      - name: Make image public
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: >-
-          gh api --method PATCH
-          "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/service-vault-runtime"
-          -f visibility=public
-
       - name: Verify public image
         run: |
           docker logout ghcr.io
@@ -56,5 +48,5 @@ jobs:
         run: >-
           docker run --rm --network bridge
           aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
-          image --quiet --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+          image --quiet --severity HIGH,CRITICAL --exit-code 1
           "${IMAGE}@${{ steps.build.outputs.digest }}"
