@@ -28,9 +28,9 @@ func TestCreateToRunDocker(t *testing.T) {
 
 func TestVaultImagePin(t *testing.T) {
 	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime", image.Name)
-	require.Equal(t, "runtime-v2.0.3-patched.3", image.Tag)
-	require.Equal(t, "sha256:181f13b1828a39e504f87673b32d94a393b54c4001c0d837d698bdfaf42b4781", image.Digest)
-	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:181f13b1828a39e504f87673b32d94a393b54c4001c0d837d698bdfaf42b4781", image.FullName())
+	require.Equal(t, "runtime-v2.0.3-patched.4", image.Tag)
+	require.Equal(t, "sha256:00b9a5fb0eef11f758be2e0978ed8b5a01f9fdadb1f895f652f84d52699741e5", image.Digest)
+	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:00b9a5fb0eef11f758be2e0978ed8b5a01f9fdadb1f895f652f84d52699741e5", image.FullName())
 }
 
 func TestAgentVersion(t *testing.T) {
