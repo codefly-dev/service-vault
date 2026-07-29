@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"fmt"
 
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
@@ -111,16 +112,36 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
+			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+				if err := validateGitOpsSecretReferences(deployment.Kubernetes.GetSecretReferences()); err != nil {
+					return err
+				}
+			}
 			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewPublicNetworkAccess())
 			if err != nil {
 				return err
 			}
-			if err = s.LoadConfiguration(ctx, req.GetConfiguration()); err != nil {
-				return err
+			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1 {
+				vaultToken, err := s.VaultTokenFromConfiguration(ctx, req.GetConfiguration())
+				if err != nil {
+					return err
+				}
+				return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(instance, vaultToken))
 			}
-			return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(ctx, instance))
+			return deployment.ExportConfiguration(ctx, s.CreateGitOpsConnectionConfiguration(instance))
 		},
 	})
+}
+
+func validateGitOpsSecretReferences(references map[string]*builderv0.KubernetesSecretKeyReference) error {
+	reference, ok := references[vaultTokenEnvironmentVariable]
+	if !ok {
+		return fmt.Errorf("promotable GitOps profile requires secret reference %q", vaultTokenEnvironmentVariable)
+	}
+	if reference.GetOptional() {
+		return fmt.Errorf("promotable GitOps secret reference %q must not be optional", vaultTokenEnvironmentVariable)
+	}
+	return nil
 }
 
 func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {

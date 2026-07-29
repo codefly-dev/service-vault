@@ -24,6 +24,8 @@ var requirements = builders.NewDependencies(agent.Name,
 	builders.NewDependency("service.codefly.yaml"),
 )
 
+const vaultTokenEnvironmentVariable = "VAULT_DEV_ROOT_TOKEN_ID"
+
 type Settings struct {
 	TransitKey string `yaml:"transit-key"`
 }
@@ -39,8 +41,6 @@ type Service struct {
 
 	// Settings
 	*Settings
-
-	vaultToken string
 
 	HttpEndpoint *basev0.Endpoint
 }
@@ -76,26 +76,36 @@ func NewService() *Service {
 	}
 }
 
-func (s *Service) LoadConfiguration(ctx context.Context, conf *basev0.Configuration) error {
-	var err error
-	s.vaultToken, err = resources.GetConfigurationValue(ctx, conf, "vault", "VAULT_TOKEN")
+func (s *Service) VaultTokenFromConfiguration(ctx context.Context, conf *basev0.Configuration) (string, error) {
+	token, err := resources.GetConfigurationValue(ctx, conf, "vault", "VAULT_TOKEN")
 	if err != nil {
-		return s.Wool.Wrapf(err, "cannot get vault token")
+		return "", s.Wool.Wrapf(err, "cannot get vault token")
 	}
-	return nil
+	return token, nil
 }
 
-func (s *Service) CreateConnectionConfiguration(ctx context.Context, instance *basev0.NetworkInstance) *basev0.Configuration {
+func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance, vaultToken string) *basev0.Configuration {
+	return s.createConnectionConfiguration(instance, &vaultToken)
+}
+
+func (s *Service) CreateGitOpsConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
+	return s.createConnectionConfiguration(instance, nil)
+}
+
+func (s *Service) createConnectionConfiguration(instance *basev0.NetworkInstance, vaultToken *string) *basev0.Configuration {
 	address := instance.Address
+	values := []*basev0.ConfigurationValue{
+		{Key: "address", Value: address, Secret: false},
+	}
+	if vaultToken != nil {
+		values = append(values, &basev0.ConfigurationValue{Key: "token", Value: *vaultToken, Secret: true})
+	}
 	return &basev0.Configuration{
 		Origin:         s.Base.Unique(),
 		RuntimeContext: resources.RuntimeContextFromInstance(instance),
 		Infos: []*basev0.ConfigurationInformation{
 			{Name: "vault",
-				ConfigurationValues: []*basev0.ConfigurationValue{
-					{Key: "address", Value: address, Secret: false},
-					{Key: "token", Value: s.vaultToken, Secret: true},
-				},
+				ConfigurationValues: values,
 			},
 		},
 	}
