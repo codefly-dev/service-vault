@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,21 @@ import (
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRuntimeMintsEphemeralVaultTokenWhenConfigurationIsAbsent(t *testing.T) {
+	token, err := NewRuntime().vaultTokenFromRuntimeConfiguration(context.Background(), nil)
+
+	require.NoError(t, err)
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	require.NoError(t, err)
+	require.Len(t, decoded, 32)
+}
+
+func TestDeploymentConfigurationStillFailsClosedWithoutVaultToken(t *testing.T) {
+	_, err := NewService().VaultTokenFromConfiguration(context.Background(), nil)
+
+	require.ErrorContains(t, err, "cannot get vault token")
+}
 
 // TestCreateToRunDocker runs the full agent lifecycle against the Docker
 // runtime (the default container backend).

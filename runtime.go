@@ -65,6 +65,25 @@ func callingContext() *basev0.NetworkAccess {
 	return resources.NewNativeNetworkAccess()
 }
 
+// vaultTokenFromRuntimeConfiguration keeps the local runtime self-contained
+// without weakening deployment builds. A Docker/Nix development Vault is
+// ephemeral, so its root token may be ephemeral too and is exported to
+// dependants only through secret runtime configuration. Deployment still calls
+// VaultTokenFromConfiguration directly and therefore fails closed unless a
+// deployment supplies VAULT_TOKEN.
+func (s *Runtime) vaultTokenFromRuntimeConfiguration(ctx context.Context, conf *basev0.Configuration) (string, error) {
+	if conf != nil {
+		return s.VaultTokenFromConfiguration(ctx, conf)
+	}
+
+	token := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, token); err != nil {
+		return "", s.Wool.Wrapf(err, "cannot generate ephemeral vault token")
+	}
+	s.Wool.Info("generated ephemeral vault token for local runtime")
+	return base64.RawURLEncoding.EncodeToString(token), nil
+}
+
 func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
@@ -95,7 +114,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 
 	s.vaultPort = 8200
 
-	s.vaultToken, err = s.VaultTokenFromConfiguration(ctx, req.Configuration)
+	s.vaultToken, err = s.vaultTokenFromRuntimeConfiguration(ctx, req.Configuration)
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
