@@ -115,10 +115,13 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 			if err != nil {
 				return err
 			}
-			if err = s.LoadConfiguration(ctx, req.GetConfiguration()); err != nil {
-				return err
+			includeToken := deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
+			if includeToken {
+				if err = s.LoadConfiguration(ctx, req.GetConfiguration()); err != nil {
+					return err
+				}
 			}
-			return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(ctx, instance))
+			return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(ctx, instance, includeToken))
 		},
 	})
 }

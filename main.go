@@ -85,17 +85,20 @@ func (s *Service) LoadConfiguration(ctx context.Context, conf *basev0.Configurat
 	return nil
 }
 
-func (s *Service) CreateConnectionConfiguration(ctx context.Context, instance *basev0.NetworkInstance) *basev0.Configuration {
+func (s *Service) CreateConnectionConfiguration(ctx context.Context, instance *basev0.NetworkInstance, includeToken bool) *basev0.Configuration {
 	address := instance.Address
+	values := []*basev0.ConfigurationValue{
+		{Key: "address", Value: address, Secret: false},
+	}
+	if includeToken {
+		values = append(values, &basev0.ConfigurationValue{Key: "token", Value: s.vaultToken, Secret: true})
+	}
 	return &basev0.Configuration{
 		Origin:         s.Base.Unique(),
 		RuntimeContext: resources.RuntimeContextFromInstance(instance),
 		Infos: []*basev0.ConfigurationInformation{
 			{Name: "vault",
-				ConfigurationValues: []*basev0.ConfigurationValue{
-					{Key: "address", Value: address, Secret: false},
-					{Key: "token", Value: s.vaultToken, Secret: true},
-				},
+				ConfigurationValues: values,
 			},
 		},
 	}

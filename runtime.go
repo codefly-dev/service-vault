@@ -73,7 +73,6 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	w := s.Wool.In("runtime::init")
 
 	s.NetworkMappings = req.ProposedNetworkMappings
-	s.Configuration = req.Configuration
 
 	net, err := resources.FindNetworkMapping(ctx, s.NetworkMappings, s.HttpEndpoint)
 	if err != nil {
@@ -95,14 +94,14 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 
 	s.vaultPort = 8200
 
-	err = s.LoadConfiguration(ctx, s.Configuration)
+	err = s.LoadConfiguration(ctx, req.Configuration)
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
 
 	// Create connection configs for all network instances
 	for _, inst := range net.Instances {
-		conf := s.CreateConnectionConfiguration(ctx, inst)
+		conf := s.CreateConnectionConfiguration(ctx, inst, true)
 		w.Debug("adding configuration", wool.Field("config", resources.MakeConfigurationSummary(conf)), wool.Field("instance", inst))
 		s.Runtime.RuntimeConfigurations = append(s.Runtime.RuntimeConfigurations, conf)
 	}

@@ -14,6 +14,7 @@ spec:
       labels:
         app: {{.Name}}
     spec:
+      automountServiceAccountToken: false
       # uid 100 = `vault` user in the official hashicorp/vault image.
       # Without runAsNonRoot enforcement the image still runs as
       # root unless explicitly set — making it explicit + setting
@@ -63,10 +64,24 @@ spec:
           ports:
             - name: http
               containerPort: 8200
+{{- if not .GitOps }}
           envFrom:
             - secretRef:
                 name: {{.Name}}-secret
+{{- else }}
           env:
+{{- range $environmentVariable, $reference := .SecretReferences }}
+            - name: {{ $environmentVariable }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $reference.Name }}
+                  key: {{ $reference.Key }}
+                  optional: {{ $reference.Optional }}
+{{- end }}
+{{- end }}
+{{- if not .GitOps }}
+          env:
+{{- end }}
             - name: SKIP_SETCAP
               value: "true"
           # Modest dev-mode footprint. Production Raft mode wants

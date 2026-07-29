@@ -34,7 +34,27 @@ func TestVaultImagePin(t *testing.T) {
 }
 
 func TestAgentVersion(t *testing.T) {
-	require.Equal(t, "0.0.16", agent.Version)
+	require.Equal(t, "0.0.17", agent.Version)
+}
+
+func TestConnectionConfigurationTokenProfiles(t *testing.T) {
+	service := NewService()
+	service.Identity = &resources.ServiceIdentity{Workspace: "workspace", Module: "module", Name: "vault"}
+	service.vaultToken = "must-stay-ephemeral"
+	instance := resources.NewHTTPNetworkInstance("vault.example.com", 8200, true)
+	instance.Access = resources.NewPublicNetworkAccess()
+
+	ephemeral := service.CreateConnectionConfiguration(context.Background(), instance, true)
+	require.Len(t, ephemeral.GetInfos(), 1)
+	require.Len(t, ephemeral.GetInfos()[0].GetConfigurationValues(), 2)
+	require.Equal(t, "must-stay-ephemeral", ephemeral.GetInfos()[0].GetConfigurationValues()[1].GetValue())
+	require.True(t, ephemeral.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
+
+	gitOps := service.CreateConnectionConfiguration(context.Background(), instance, false)
+	require.Len(t, gitOps.GetInfos(), 1)
+	require.Len(t, gitOps.GetInfos()[0].GetConfigurationValues(), 1)
+	require.Equal(t, "address", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetKey())
+	require.Equal(t, "https://vault.example.com:8200", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetValue())
 }
 
 func TestVaultImageAudit(t *testing.T) {
@@ -107,7 +127,7 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 
 	require.Equal(t, 1, len(runtime.Endpoints))
 
-	networkMappings, err := networkManager.GenerateNetworkMappings(ctx, env, workspace, runtime.Identity, runtime.Endpoints)
+	networkMappings, err := networkManager.GenerateNetworkMappings(ctx, env, workspace, runtime.Identity, runtime.Endpoints, runtimeContext)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(networkMappings))
 
