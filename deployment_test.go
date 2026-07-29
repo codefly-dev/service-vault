@@ -100,11 +100,16 @@ func TestDeploymentProfiles(t *testing.T) {
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, gitOps.GetState().GetState())
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, gitOps.GetState().GetState(), gitOps.GetState().GetMessage())
 	output := gitOps.GetDeployment().GetKubernetes()
 	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, output.GetProfile())
 	require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
 	require.True(t, output.GetValidation().GetPromotable())
+	require.Len(t, gitOps.GetConfiguration().GetInfos()[0].GetConfigurationValues(), 2)
+	tokenCapability := gitOps.GetConfiguration().GetInfos()[0].GetConfigurationValues()[1]
+	require.Equal(t, "token", tokenCapability.GetKey())
+	require.Empty(t, tokenCapability.GetValue())
+	require.True(t, tokenCapability.GetSecret())
 	gitOpsTree := readManifestTree(t, gitOpsDestination)
 	require.NotContains(t, gitOpsTree, secret)
 	require.NotContains(t, gitOpsTree, base64.StdEncoding.EncodeToString([]byte(secret)))

@@ -34,7 +34,7 @@ func TestVaultImagePin(t *testing.T) {
 }
 
 func TestAgentVersion(t *testing.T) {
-	require.Equal(t, "0.0.20", agent.Version)
+	require.Equal(t, "0.0.21", agent.Version)
 }
 
 func TestConnectionConfigurationTokenProfiles(t *testing.T) {
@@ -51,9 +51,12 @@ func TestConnectionConfigurationTokenProfiles(t *testing.T) {
 
 	gitOps := service.CreateGitOpsConnectionConfiguration(instance)
 	require.Len(t, gitOps.GetInfos(), 1)
-	require.Len(t, gitOps.GetInfos()[0].GetConfigurationValues(), 1)
+	require.Len(t, gitOps.GetInfos()[0].GetConfigurationValues(), 2)
 	require.Equal(t, "address", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetKey())
 	require.Equal(t, "https://vault.example.com:8200", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetValue())
+	require.Equal(t, "token", gitOps.GetInfos()[0].GetConfigurationValues()[1].GetKey())
+	require.Empty(t, gitOps.GetInfos()[0].GetConfigurationValues()[1].GetValue())
+	require.True(t, gitOps.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
 }
 
 func TestVaultImageAudit(t *testing.T) {
