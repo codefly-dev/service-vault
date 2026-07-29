@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"strings"
 
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
@@ -113,9 +114,11 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		Templates:            deploymentFS,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
 			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-				if err := validateGitOpsSecretReferences(deployment.Kubernetes.GetSecretReferences()); err != nil {
+				references, err := vaultGitOpsSecretReferences(deployment.Kubernetes.GetSecretReferences())
+				if err != nil {
 					return err
 				}
+				deployment.Kubernetes.SecretReferences = references
 			}
 			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewPublicNetworkAccess())
 			if err != nil {
@@ -133,15 +136,28 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	})
 }
 
-func validateGitOpsSecretReferences(references map[string]*builderv0.KubernetesSecretKeyReference) error {
-	reference, ok := references[vaultTokenEnvironmentVariable]
-	if !ok {
-		return fmt.Errorf("promotable GitOps profile requires secret reference %q", vaultTokenEnvironmentVariable)
+func vaultGitOpsSecretReferences(
+	references map[string]*builderv0.KubernetesSecretKeyReference,
+) (map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	if len(references) != 1 {
+		return nil, fmt.Errorf("promotable GitOps profile requires exactly one canonical Vault token secret reference")
+	}
+	var source string
+	var reference *builderv0.KubernetesSecretKeyReference
+	for key, candidate := range references {
+		source = key
+		reference = candidate
+	}
+	if !strings.HasPrefix(source, "CODEFLY__SERVICE_SECRET_CONFIGURATION__") ||
+		!strings.HasSuffix(source, "__VAULT__VAULT_TOKEN") {
+		return nil, fmt.Errorf("promotable GitOps profile requires the canonical Vault token secret reference")
 	}
 	if reference.GetOptional() {
-		return fmt.Errorf("promotable GitOps secret reference %q must not be optional", vaultTokenEnvironmentVariable)
+		return nil, fmt.Errorf("promotable GitOps Vault token secret reference must not be optional")
 	}
-	return nil
+	return map[string]*builderv0.KubernetesSecretKeyReference{
+		vaultTokenEnvironmentVariable: reference,
+	}, nil
 }
 
 func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {

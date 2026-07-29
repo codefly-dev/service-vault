@@ -93,9 +93,9 @@ func TestDeploymentProfiles(t *testing.T) {
 		networkMappings,
 		nil,
 		map[string]*builderv0.KubernetesSecretKeyReference{
-			"VAULT_DEV_ROOT_TOKEN_ID": {
+			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 				Name: "vault-credentials",
-				Key:  "root-token",
+				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
 			},
 		},
 	))
@@ -114,7 +114,7 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.NotContains(t, gitOpsTree, "\nstringData:")
 	require.Contains(t, gitOpsTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
 	require.Contains(t, gitOpsTree, "name: vault-credentials")
-	require.Contains(t, gitOpsTree, "key: root-token")
+	require.Contains(t, gitOpsTree, "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN")
 	require.Contains(t, gitOpsTree, image.FullName())
 }
 
@@ -176,7 +176,7 @@ func TestGitOpsDeploymentRequiresVaultTokenReference(t *testing.T) {
 	}{
 		{
 			name:    "missing",
-			message: `requires secret reference "VAULT_DEV_ROOT_TOKEN_ID"`,
+			message: `requires exactly one canonical Vault token secret reference`,
 		},
 		{
 			name: "misnamed",
@@ -186,18 +186,18 @@ func TestGitOpsDeploymentRequiresVaultTokenReference(t *testing.T) {
 					Key:  "root-token",
 				},
 			},
-			message: `requires secret reference "VAULT_DEV_ROOT_TOKEN_ID"`,
+			message: `requires the canonical Vault token secret reference`,
 		},
 		{
 			name: "optional",
 			references: map[string]*builderv0.KubernetesSecretKeyReference{
-				"VAULT_DEV_ROOT_TOKEN_ID": {
+				"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 					Name:     "vault-credentials",
-					Key:      "root-token",
+					Key:      "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
 					Optional: true,
 				},
 			},
-			message: `secret reference "VAULT_DEV_ROOT_TOKEN_ID" must not be optional`,
+			message: `Vault token secret reference must not be optional`,
 		},
 	}
 	for _, test := range tests {
