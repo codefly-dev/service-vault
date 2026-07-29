@@ -40,17 +40,16 @@ func TestAgentVersion(t *testing.T) {
 func TestConnectionConfigurationTokenProfiles(t *testing.T) {
 	service := NewService()
 	service.Identity = &resources.ServiceIdentity{Workspace: "workspace", Module: "module", Name: "vault"}
-	service.vaultToken = "must-stay-ephemeral"
 	instance := resources.NewHTTPNetworkInstance("vault.example.com", 8200, true)
 	instance.Access = resources.NewPublicNetworkAccess()
 
-	ephemeral := service.CreateConnectionConfiguration(context.Background(), instance, true)
+	ephemeral := service.CreateConnectionConfiguration(instance, "must-stay-ephemeral")
 	require.Len(t, ephemeral.GetInfos(), 1)
 	require.Len(t, ephemeral.GetInfos()[0].GetConfigurationValues(), 2)
 	require.Equal(t, "must-stay-ephemeral", ephemeral.GetInfos()[0].GetConfigurationValues()[1].GetValue())
 	require.True(t, ephemeral.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
 
-	gitOps := service.CreateConnectionConfiguration(context.Background(), instance, false)
+	gitOps := service.CreateGitOpsConnectionConfiguration(instance)
 	require.Len(t, gitOps.GetInfos(), 1)
 	require.Len(t, gitOps.GetInfos()[0].GetConfigurationValues(), 1)
 	require.Equal(t, "address", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetKey())

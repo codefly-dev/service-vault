@@ -27,6 +27,7 @@ type Runtime struct {
 	runnerEnvironment *dockerrun.DockerEnvironment
 	vaultPort         uint16
 	vaultAddress      string
+	vaultToken        string
 
 	// nixRuntime is set instead of runnerEnvironment when the caller requests
 	// RuntimeContextNix — vault runs natively from a nix-provisioned binary.
@@ -94,14 +95,14 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 
 	s.vaultPort = 8200
 
-	err = s.LoadConfiguration(ctx, req.Configuration)
+	s.vaultToken, err = s.VaultTokenFromConfiguration(ctx, req.Configuration)
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
 
 	// Create connection configs for all network instances
 	for _, inst := range net.Instances {
-		conf := s.CreateConnectionConfiguration(ctx, inst, true)
+		conf := s.CreateConnectionConfiguration(inst, s.vaultToken)
 		w.Debug("adding configuration", wool.Field("config", resources.MakeConfigurationSummary(conf)), wool.Field("instance", inst))
 		s.Runtime.RuntimeConfigurations = append(s.Runtime.RuntimeConfigurations, conf)
 	}
@@ -141,7 +142,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		runner.WithOutput(newVaultLogWriter(s.Wool, s.vaultToken))
 		runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
 		runner.WithEnvironmentVariables(ctx,
-			resources.Env("VAULT_DEV_ROOT_TOKEN_ID", s.vaultToken),
+			resources.Env(vaultTokenEnvironmentVariable, s.vaultToken),
 			resources.Env("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200"),
 			resources.Env("SKIP_SETCAP", "true"),
 		)

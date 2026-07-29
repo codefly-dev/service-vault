@@ -64,12 +64,16 @@ spec:
           ports:
             - name: http
               containerPort: 8200
-{{- if not .GitOps }}
-          envFrom:
-            - secretRef:
-                name: {{.Name}}-secret
-{{- else }}
           env:
+{{- if not .GitOps }}
+{{- range $secretKey, $_ := .SecretMap }}
+            - name: VAULT_DEV_ROOT_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{$.Name}}-secret
+                  key: {{ $secretKey }}
+{{- end }}
+{{- else }}
 {{- range $environmentVariable, $reference := .SecretReferences }}
             - name: {{ $environmentVariable }}
               valueFrom:
@@ -78,9 +82,6 @@ spec:
                   key: {{ $reference.Key }}
                   optional: {{ $reference.Optional }}
 {{- end }}
-{{- end }}
-{{- if not .GitOps }}
-          env:
 {{- end }}
             - name: SKIP_SETCAP
               value: "true"
