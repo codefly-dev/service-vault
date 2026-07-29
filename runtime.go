@@ -73,7 +73,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	w := s.Wool.In("runtime::init")
 
 	s.NetworkMappings = req.ProposedNetworkMappings
-	s.Configuration = req.Configuration
+	configuration := req.GetConfiguration()
 
 	net, err := resources.FindNetworkMapping(ctx, s.NetworkMappings, s.HttpEndpoint)
 	if err != nil {
@@ -95,7 +95,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 
 	s.vaultPort = 8200
 
-	err = s.LoadConfiguration(ctx, s.Configuration)
+	err = s.LoadConfiguration(ctx, configuration)
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
