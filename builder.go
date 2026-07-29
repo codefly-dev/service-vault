@@ -109,7 +109,8 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	ctx = s.Wool.Inject(ctx)
 	s.Base.SetDockerImage(image)
 
-	return s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
+	var promotableConfiguration *basev0.Configuration
+	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
@@ -131,9 +132,17 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 				}
 				return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(instance, vaultToken))
 			}
-			return deployment.ExportConfiguration(ctx, s.CreateGitOpsConnectionConfiguration(instance))
+			promotableConfiguration = s.CreateGitOpsConnectionConfiguration(instance)
+			return nil
 		},
 	})
+	if err != nil ||
+		response.GetState().GetState() != builderv0.DeploymentStatus_SUCCESS ||
+		promotableConfiguration == nil {
+		return response, err
+	}
+	response.Configuration = promotableConfiguration
+	return response, nil
 }
 
 func vaultGitOpsSecretReferences(
