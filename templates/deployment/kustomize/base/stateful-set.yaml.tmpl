@@ -65,7 +65,7 @@ spec:
             - name: http
               containerPort: 8200
           env:
-{{- if not .GitOps }}
+{{- if not .Restricted }}
 {{- range $secretKey, $_ := .SecretMap }}
             - name: VAULT_DEV_ROOT_TOKEN_ID
               valueFrom:

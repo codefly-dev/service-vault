@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -86,10 +87,10 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.Contains(t, string(ephemeralStatefulSet), "name: VAULT_DEV_ROOT_TOKEN_ID")
 	require.Contains(t, string(ephemeralStatefulSet), "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__TOKEN")
 
-	gitOpsDestination := t.TempDir()
-	gitOps, err := builder.Deploy(ctx, deploymentRequest(
-		gitOpsDestination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+	restrictedDestination := t.TempDir()
+	restricted, err := builder.Deploy(ctx, deploymentRequest(
+		restrictedDestination,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		networkMappings,
 		nil,
 		map[string]*builderv0.KubernetesSecretKeyReference{
@@ -100,22 +101,52 @@ func TestDeploymentProfiles(t *testing.T) {
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, gitOps.GetState().GetState())
-	output := gitOps.GetDeployment().GetKubernetes()
-	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, output.GetProfile())
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, restricted.GetState().GetState())
+	output := restricted.GetDeployment().GetKubernetes()
+	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, output.GetProfile())
 	require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
-	require.True(t, output.GetValidation().GetPromotable())
-	gitOpsTree := readManifestTree(t, gitOpsDestination)
-	require.NotContains(t, gitOpsTree, secret)
-	require.NotContains(t, gitOpsTree, base64.StdEncoding.EncodeToString([]byte(secret)))
-	require.NotContains(t, gitOpsTree, "kind: Namespace")
-	require.NotContains(t, gitOpsTree, "kind: Secret")
-	require.NotContains(t, gitOpsTree, "\ndata:")
-	require.NotContains(t, gitOpsTree, "\nstringData:")
-	require.Contains(t, gitOpsTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
-	require.Contains(t, gitOpsTree, "name: vault-credentials")
-	require.Contains(t, gitOpsTree, "key: root-token")
-	require.Contains(t, gitOpsTree, image.FullName())
+	require.True(t, output.GetValidation().GetRestricted())
+	restrictedTree := readManifestTree(t, restrictedDestination)
+	require.NotContains(t, restrictedTree, secret)
+	require.NotContains(t, restrictedTree, base64.StdEncoding.EncodeToString([]byte(secret)))
+	require.NotContains(t, restrictedTree, "kind: Namespace")
+	require.NotContains(t, restrictedTree, "kind: Secret")
+	require.NotContains(t, restrictedTree, "\ndata:")
+	require.NotContains(t, restrictedTree, "\nstringData:")
+	require.Contains(t, restrictedTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
+	require.Contains(t, restrictedTree, "name: vault-credentials")
+	require.Contains(t, restrictedTree, "key: root-token")
+	require.Contains(t, restrictedTree, image.FullName())
+
+	// Boundary: plugin-owned output stays a pure manifest producer. It may not
+	// carry reconciliation control-plane objects or repository source bindings —
+	// that responsibility belongs to the separate promotion driver, not here.
+	for _, forbidden := range []string{
+		"argoproj.io", "kind: Application", "kind: AppProject",
+		"fluxcd.io", "repoURL", "targetRevision",
+	} {
+		require.NotContains(t, restrictedTree, forbidden)
+	}
+
+	// The bundle is the transport-neutral hand-off: canonical inventory,
+	// entry point, digest, contract version, and validation evidence — all a
+	// promotion driver needs to consume the output without any plugin-specific
+	// publication code.
+	bundle := output.GetBundle()
+	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, bundle.GetProfile())
+	require.Equal(t, output.GetContractVersion(), bundle.GetContractVersion())
+	require.NotEmpty(t, bundle.GetContractVersion())
+	require.Equal(t, []string{"overlays/test"}, bundle.GetEntryPoints())
+	require.NotEmpty(t, bundle.GetFiles())
+	require.True(t, sort.SliceIsSorted(bundle.GetFiles(), func(i, j int) bool {
+		return bundle.GetFiles()[i].GetPath() < bundle.GetFiles()[j].GetPath()
+	}), "bundle inventory must be canonically sorted")
+	for _, file := range bundle.GetFiles() {
+		require.Regexp(t, `^sha256:[0-9a-f]{64}$`, file.GetDigest())
+	}
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, bundle.GetDigest())
+	require.Same(t, output.GetValidation(), bundle.GetValidation())
+	require.Equal(t, "vault-credentials", bundle.GetSecretReferences()["VAULT_DEV_ROOT_TOKEN_ID"].GetName())
 }
 
 func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
@@ -165,7 +196,7 @@ func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
 	}
 }
 
-func TestGitOpsDeploymentRequiresVaultTokenReference(t *testing.T) {
+func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 	ctx := context.Background()
 	builder, networkMappings := deploymentBuilder(t)
 
@@ -204,7 +235,7 @@ func TestGitOpsDeploymentRequiresVaultTokenReference(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response, err := builder.Deploy(ctx, deploymentRequest(
 				t.TempDir(),
-				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 				networkMappings,
 				nil,
 				test.references,

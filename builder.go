@@ -112,8 +112,8 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
-			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-				if err := validateGitOpsSecretReferences(deployment.Kubernetes.GetSecretReferences()); err != nil {
+			if services.IsRestrictedOutputProfile(deployment.Profile) {
+				if err := validateRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences()); err != nil {
 					return err
 				}
 			}
@@ -128,18 +128,18 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 				}
 				return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(instance, vaultToken))
 			}
-			return deployment.ExportConfiguration(ctx, s.CreateGitOpsConnectionConfiguration(instance))
+			return deployment.ExportConfiguration(ctx, s.CreateRestrictedConnectionConfiguration(instance))
 		},
 	})
 }
 
-func validateGitOpsSecretReferences(references map[string]*builderv0.KubernetesSecretKeyReference) error {
+func validateRestrictedSecretReferences(references map[string]*builderv0.KubernetesSecretKeyReference) error {
 	reference, ok := references[vaultTokenEnvironmentVariable]
 	if !ok {
-		return fmt.Errorf("promotable GitOps profile requires secret reference %q", vaultTokenEnvironmentVariable)
+		return fmt.Errorf("restricted profile requires secret reference %q", vaultTokenEnvironmentVariable)
 	}
 	if reference.GetOptional() {
-		return fmt.Errorf("promotable GitOps secret reference %q must not be optional", vaultTokenEnvironmentVariable)
+		return fmt.Errorf("restricted secret reference %q must not be optional", vaultTokenEnvironmentVariable)
 	}
 	return nil
 }

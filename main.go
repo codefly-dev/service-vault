@@ -88,7 +88,7 @@ func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance
 	return s.createConnectionConfiguration(instance, &vaultToken)
 }
 
-func (s *Service) CreateGitOpsConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
+func (s *Service) CreateRestrictedConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
 	return s.createConnectionConfiguration(instance, nil)
 }
 
