@@ -66,14 +66,14 @@ func TestConnectionConfigurationTokenProfiles(t *testing.T) {
 	require.Equal(t, "must-stay-ephemeral", ephemeral.GetInfos()[0].GetConfigurationValues()[1].GetValue())
 	require.True(t, ephemeral.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
 
-	gitOps := service.CreateGitOpsConnectionConfiguration(instance)
-	require.Len(t, gitOps.GetInfos(), 1)
-	require.Len(t, gitOps.GetInfos()[0].GetConfigurationValues(), 2)
-	require.Equal(t, "address", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetKey())
-	require.Equal(t, "https://vault.example.com:8200", gitOps.GetInfos()[0].GetConfigurationValues()[0].GetValue())
-	require.Equal(t, "token", gitOps.GetInfos()[0].GetConfigurationValues()[1].GetKey())
-	require.Empty(t, gitOps.GetInfos()[0].GetConfigurationValues()[1].GetValue())
-	require.True(t, gitOps.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
+	restricted := service.CreateRestrictedConnectionConfiguration(instance)
+	require.Len(t, restricted.GetInfos(), 1)
+	require.Len(t, restricted.GetInfos()[0].GetConfigurationValues(), 2)
+	require.Equal(t, "address", restricted.GetInfos()[0].GetConfigurationValues()[0].GetKey())
+	require.Equal(t, "https://vault.example.com:8200", restricted.GetInfos()[0].GetConfigurationValues()[0].GetValue())
+	require.Equal(t, "token", restricted.GetInfos()[0].GetConfigurationValues()[1].GetKey())
+	require.Empty(t, restricted.GetInfos()[0].GetConfigurationValues()[1].GetValue())
+	require.True(t, restricted.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
 }
 
 func TestVaultImageAudit(t *testing.T) {

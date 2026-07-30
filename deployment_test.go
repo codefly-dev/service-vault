@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -86,10 +87,10 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.Contains(t, string(ephemeralStatefulSet), "name: VAULT_DEV_ROOT_TOKEN_ID")
 	require.Contains(t, string(ephemeralStatefulSet), "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__TOKEN")
 
-	gitOpsDestination := t.TempDir()
-	gitOps, err := builder.Deploy(ctx, deploymentRequest(
-		gitOpsDestination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+	restrictedDestination := t.TempDir()
+	restricted, err := builder.Deploy(ctx, deploymentRequest(
+		restrictedDestination,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		networkMappings,
 		nil,
 		map[string]*builderv0.KubernetesSecretKeyReference{
@@ -100,27 +101,96 @@ func TestDeploymentProfiles(t *testing.T) {
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, gitOps.GetState().GetState(), gitOps.GetState().GetMessage())
-	output := gitOps.GetDeployment().GetKubernetes()
-	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, output.GetProfile())
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, restricted.GetState().GetState(), restricted.GetState().GetMessage())
+	output := restricted.GetDeployment().GetKubernetes()
+	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, output.GetProfile())
 	require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
-	require.True(t, output.GetValidation().GetPromotable())
-	require.Len(t, gitOps.GetConfiguration().GetInfos()[0].GetConfigurationValues(), 2)
-	tokenCapability := gitOps.GetConfiguration().GetInfos()[0].GetConfigurationValues()[1]
+	require.True(t, output.GetValidation().GetRestricted())
+	// Token handoff: the restricted deployment's connection configuration
+	// advertises an empty, secret token capability the promotion driver fills;
+	// the plugin never receives or serializes the value.
+	require.Len(t, restricted.GetConfiguration().GetInfos()[0].GetConfigurationValues(), 2)
+	tokenCapability := restricted.GetConfiguration().GetInfos()[0].GetConfigurationValues()[1]
 	require.Equal(t, "token", tokenCapability.GetKey())
 	require.Empty(t, tokenCapability.GetValue())
 	require.True(t, tokenCapability.GetSecret())
-	gitOpsTree := readManifestTree(t, gitOpsDestination)
-	require.NotContains(t, gitOpsTree, secret)
-	require.NotContains(t, gitOpsTree, base64.StdEncoding.EncodeToString([]byte(secret)))
-	require.NotContains(t, gitOpsTree, "kind: Namespace")
-	require.NotContains(t, gitOpsTree, "kind: Secret")
-	require.NotContains(t, gitOpsTree, "\ndata:")
-	require.NotContains(t, gitOpsTree, "\nstringData:")
-	require.Contains(t, gitOpsTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
-	require.Contains(t, gitOpsTree, "name: vault-credentials")
-	require.Contains(t, gitOpsTree, "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN")
-	require.Contains(t, gitOpsTree, image.FullName())
+	restrictedTree := readManifestTree(t, restrictedDestination)
+	require.NotContains(t, restrictedTree, secret)
+	require.NotContains(t, restrictedTree, base64.StdEncoding.EncodeToString([]byte(secret)))
+	require.NotContains(t, restrictedTree, "kind: Namespace")
+	require.NotContains(t, restrictedTree, "kind: Secret")
+	require.NotContains(t, restrictedTree, "\ndata:")
+	require.NotContains(t, restrictedTree, "\nstringData:")
+	require.Contains(t, restrictedTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
+	require.Contains(t, restrictedTree, "name: vault-credentials")
+	require.Contains(t, restrictedTree, "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN")
+	require.Contains(t, restrictedTree, image.FullName())
+
+	// Boundary: plugin-owned output stays a pure manifest producer. It may not
+	// carry reconciliation control-plane objects or repository source bindings —
+	// that responsibility belongs to the separate promotion driver, not here.
+	for _, forbidden := range []string{
+		"argoproj.io", "kind: Application", "kind: AppProject",
+		"fluxcd.io", "repoURL", "targetRevision",
+	} {
+		require.NotContains(t, restrictedTree, forbidden)
+	}
+
+	// The bundle is the transport-neutral hand-off: canonical inventory,
+	// entry point, digest, contract version, and validation evidence — all a
+	// promotion driver needs to consume the output without any plugin-specific
+	// publication code.
+	bundle := output.GetBundle()
+	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, bundle.GetProfile())
+	require.Equal(t, output.GetContractVersion(), bundle.GetContractVersion())
+	require.NotEmpty(t, bundle.GetContractVersion())
+	require.Equal(t, []string{"overlays/test"}, bundle.GetEntryPoints())
+	require.NotEmpty(t, bundle.GetFiles())
+	require.True(t, sort.SliceIsSorted(bundle.GetFiles(), func(i, j int) bool {
+		return bundle.GetFiles()[i].GetPath() < bundle.GetFiles()[j].GetPath()
+	}), "bundle inventory must be canonically sorted")
+	for _, file := range bundle.GetFiles() {
+		require.Regexp(t, `^sha256:[0-9a-f]{64}$`, file.GetDigest())
+	}
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, bundle.GetDigest())
+	// The bundle carries the same validation evidence the output reports — the
+	// observable contract, asserted on content rather than pointer identity so
+	// it holds whether core shares or copies the validation into the bundle.
+	require.Equal(t, output.GetValidation().GetStaticValidation(), bundle.GetValidation().GetStaticValidation())
+	require.True(t, bundle.GetValidation().GetRestricted())
+	require.Equal(t, "vault-credentials", bundle.GetSecretReferences()["VAULT_DEV_ROOT_TOKEN_ID"].GetName())
+}
+
+// TestRestrictedProfilesRenderIdenticalBundle locks the migration-window
+// contract at the plugin's public Deploy boundary: the deprecated
+// PROMOTABLE_GITOPS_V1 profile is still accepted and renders byte-for-byte
+// identically to its transport-neutral RESTRICTED_PORTABLE_V1 successor,
+// differing only in the profile label the output records.
+func TestRestrictedProfilesRenderIdenticalBundle(t *testing.T) {
+	ctx := context.Background()
+	builder, networkMappings := deploymentBuilder(t)
+
+	references := map[string]*builderv0.KubernetesSecretKeyReference{
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
+			Name: "vault-credentials",
+			Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
+		},
+	}
+	deploy := func(profile builderv0.KubernetesOutputProfile) (*builderv0.KubernetesDeploymentOutput, string) {
+		destination := t.TempDir()
+		response, err := builder.Deploy(ctx, deploymentRequest(destination, profile, networkMappings, nil, references))
+		require.NoError(t, err)
+		require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState())
+		return response.GetDeployment().GetKubernetes(), readManifestTree(t, destination)
+	}
+
+	neutral, neutralTree := deploy(builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1)
+	deprecated, deprecatedTree := deploy(builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1) //nolint:staticcheck // migration compatibility
+
+	require.Equal(t, neutralTree, deprecatedTree, "deprecated profile must render an identical manifest tree")
+	require.Equal(t, neutral.GetBundle().GetDigest(), deprecated.GetBundle().GetDigest(), "identical trees must yield an identical bundle digest")
+	require.True(t, deprecated.GetValidation().GetRestricted())
+	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, deprecated.GetProfile()) //nolint:staticcheck // migration compatibility
 }
 
 func TestEphemeralDeploymentFailsClosedWithoutVaultToken(t *testing.T) {
@@ -200,7 +270,7 @@ func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
 	}
 }
 
-func TestGitOpsDeploymentRequiresVaultTokenReference(t *testing.T) {
+func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 	ctx := context.Background()
 	builder, networkMappings := deploymentBuilder(t)
 
@@ -239,7 +309,7 @@ func TestGitOpsDeploymentRequiresVaultTokenReference(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response, err := builder.Deploy(ctx, deploymentRequest(
 				t.TempDir(),
-				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 				networkMappings,
 				nil,
 				test.references,

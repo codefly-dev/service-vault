@@ -92,7 +92,11 @@ func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance
 	return s.createConnectionConfiguration(instance, &vaultToken)
 }
 
-func (s *Service) CreateGitOpsConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
+// CreateRestrictedConnectionConfiguration advertises the Vault connection for a
+// restricted-profile deployment: the address plus an empty, secret token
+// capability. The value is deliberately blank — the plugin never receives or
+// serializes the token; the promotion driver fills it from the external secret.
+func (s *Service) CreateRestrictedConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
 	token := ""
 	return s.createConnectionConfiguration(instance, &token)
 }

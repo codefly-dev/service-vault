@@ -109,13 +109,13 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	ctx = s.Wool.Inject(ctx)
 	s.Base.SetDockerImage(image)
 
-	var promotableConfiguration *basev0.Configuration
+	var restrictedConfiguration *basev0.Configuration
 	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
-			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-				references, err := vaultGitOpsSecretReferences(deployment.Kubernetes.GetSecretReferences())
+			if services.IsRestrictedOutputProfile(deployment.Profile) {
+				references, err := vaultRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences())
 				if err != nil {
 					return err
 				}
@@ -132,24 +132,31 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 				}
 				return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(instance, vaultToken))
 			}
-			promotableConfiguration = s.CreateGitOpsConnectionConfiguration(instance)
+			// Restricted profiles hand the connection off through the response
+			// (not ExportConfiguration) so the empty token capability reaches the
+			// promotion driver without being injected into the rendered manifests.
+			restrictedConfiguration = s.CreateRestrictedConnectionConfiguration(instance)
 			return nil
 		},
 	})
 	if err != nil ||
 		response.GetState().GetState() != builderv0.DeploymentStatus_SUCCESS ||
-		promotableConfiguration == nil {
+		restrictedConfiguration == nil {
 		return response, err
 	}
-	response.Configuration = promotableConfiguration
+	response.Configuration = restrictedConfiguration
 	return response, nil
 }
 
-func vaultGitOpsSecretReferences(
+// vaultRestrictedSecretReferences validates the caller-supplied external-secret
+// references for a restricted deployment and remaps the single canonical Vault
+// token reference onto the environment variable the container consumes. The
+// plugin never receives the secret value — only the reference to it.
+func vaultRestrictedSecretReferences(
 	references map[string]*builderv0.KubernetesSecretKeyReference,
 ) (map[string]*builderv0.KubernetesSecretKeyReference, error) {
 	if len(references) != 1 {
-		return nil, fmt.Errorf("promotable GitOps profile requires exactly one canonical Vault token secret reference")
+		return nil, fmt.Errorf("restricted profile requires exactly one canonical Vault token secret reference")
 	}
 	var source string
 	var reference *builderv0.KubernetesSecretKeyReference
@@ -159,10 +166,10 @@ func vaultGitOpsSecretReferences(
 	}
 	if !strings.HasPrefix(source, "CODEFLY__SERVICE_SECRET_CONFIGURATION__") ||
 		!strings.HasSuffix(source, "__VAULT__VAULT_TOKEN") {
-		return nil, fmt.Errorf("promotable GitOps profile requires the canonical Vault token secret reference")
+		return nil, fmt.Errorf("restricted profile requires the canonical Vault token secret reference")
 	}
 	if reference.GetOptional() {
-		return nil, fmt.Errorf("promotable GitOps Vault token secret reference must not be optional")
+		return nil, fmt.Errorf("restricted Vault token secret reference must not be optional")
 	}
 	return map[string]*builderv0.KubernetesSecretKeyReference{
 		vaultTokenEnvironmentVariable: reference,
