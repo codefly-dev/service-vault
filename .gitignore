@@ -1,6 +1,7 @@
 .idea
 go.work*
 dist/
+.codefly/
 
 # Compiled agent binary — never track binaries.
 /service-vault

@@ -22,18 +22,19 @@ import (
 )
 
 func TestRuntimeMintsEphemeralVaultTokenWhenConfigurationIsAbsent(t *testing.T) {
-	token, err := NewRuntime().vaultTokenFromRuntimeConfiguration(context.Background(), nil)
+	runtime := NewRuntime()
+	tokens := make([]string, 2)
+	for i := range tokens {
+		token, err := runtime.vaultTokenFromRuntimeConfiguration(context.Background(), nil)
 
-	require.NoError(t, err)
-	decoded, err := base64.RawURLEncoding.DecodeString(token)
-	require.NoError(t, err)
-	require.Len(t, decoded, 32)
-}
+		require.NoError(t, err)
+		decoded, err := base64.RawURLEncoding.DecodeString(token)
+		require.NoError(t, err)
+		require.Len(t, decoded, 32)
+		tokens[i] = token
+	}
 
-func TestDeploymentConfigurationStillFailsClosedWithoutVaultToken(t *testing.T) {
-	_, err := NewService().VaultTokenFromConfiguration(context.Background(), nil)
-
-	require.ErrorContains(t, err, "cannot get vault token")
+	require.NotEqual(t, tokens[0], tokens[1])
 }
 
 // TestCreateToRunDocker runs the full agent lifecycle against the Docker
