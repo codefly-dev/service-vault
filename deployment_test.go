@@ -145,8 +145,41 @@ func TestDeploymentProfiles(t *testing.T) {
 		require.Regexp(t, `^sha256:[0-9a-f]{64}$`, file.GetDigest())
 	}
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, bundle.GetDigest())
-	require.Same(t, output.GetValidation(), bundle.GetValidation())
+	// The bundle carries the same validation evidence the output reports — the
+	// observable contract, asserted on content rather than pointer identity so
+	// it holds whether core shares or copies the validation into the bundle.
+	require.Equal(t, output.GetValidation().GetStaticValidation(), bundle.GetValidation().GetStaticValidation())
+	require.True(t, bundle.GetValidation().GetRestricted())
 	require.Equal(t, "vault-credentials", bundle.GetSecretReferences()["VAULT_DEV_ROOT_TOKEN_ID"].GetName())
+}
+
+// TestRestrictedProfilesRenderIdenticalBundle locks the migration-window
+// contract at the plugin's public Deploy boundary: the deprecated
+// PROMOTABLE_GITOPS_V1 profile is still accepted and renders byte-for-byte
+// identically to its transport-neutral RESTRICTED_PORTABLE_V1 successor,
+// differing only in the profile label the output records.
+func TestRestrictedProfilesRenderIdenticalBundle(t *testing.T) {
+	ctx := context.Background()
+	builder, networkMappings := deploymentBuilder(t)
+
+	references := map[string]*builderv0.KubernetesSecretKeyReference{
+		"VAULT_DEV_ROOT_TOKEN_ID": {Name: "vault-credentials", Key: "root-token"},
+	}
+	deploy := func(profile builderv0.KubernetesOutputProfile) (*builderv0.KubernetesDeploymentOutput, string) {
+		destination := t.TempDir()
+		response, err := builder.Deploy(ctx, deploymentRequest(destination, profile, networkMappings, nil, references))
+		require.NoError(t, err)
+		require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState())
+		return response.GetDeployment().GetKubernetes(), readManifestTree(t, destination)
+	}
+
+	neutral, neutralTree := deploy(builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1)
+	deprecated, deprecatedTree := deploy(builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1) //nolint:staticcheck // migration compatibility
+
+	require.Equal(t, neutralTree, deprecatedTree, "deprecated profile must render an identical manifest tree")
+	require.Equal(t, neutral.GetBundle().GetDigest(), deprecated.GetBundle().GetDigest(), "identical trees must yield an identical bundle digest")
+	require.True(t, deprecated.GetValidation().GetRestricted())
+	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, deprecated.GetProfile()) //nolint:staticcheck // migration compatibility
 }
 
 func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
