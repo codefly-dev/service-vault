@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,6 +21,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRuntimeMintsEphemeralVaultTokenWhenConfigurationIsAbsent(t *testing.T) {
+	runtime := NewRuntime()
+	tokens := make([]string, 2)
+	for i := range tokens {
+		token, err := runtime.vaultTokenFromRuntimeConfiguration(context.Background(), nil)
+
+		require.NoError(t, err)
+		decoded, err := base64.RawURLEncoding.DecodeString(token)
+		require.NoError(t, err)
+		require.Len(t, decoded, 32)
+		tokens[i] = token
+	}
+
+	require.NotEqual(t, tokens[0], tokens[1])
+}
+
 // TestCreateToRunDocker runs the full agent lifecycle against the Docker
 // runtime (the default container backend).
 func TestCreateToRunDocker(t *testing.T) {
@@ -34,7 +51,7 @@ func TestVaultImagePin(t *testing.T) {
 }
 
 func TestAgentVersion(t *testing.T) {
-	require.Equal(t, "0.0.18", agent.Version)
+	require.Equal(t, "0.0.21", agent.Version)
 }
 
 func TestConnectionConfigurationTokenProfiles(t *testing.T) {
@@ -51,9 +68,12 @@ func TestConnectionConfigurationTokenProfiles(t *testing.T) {
 
 	restricted := service.CreateRestrictedConnectionConfiguration(instance)
 	require.Len(t, restricted.GetInfos(), 1)
-	require.Len(t, restricted.GetInfos()[0].GetConfigurationValues(), 1)
+	require.Len(t, restricted.GetInfos()[0].GetConfigurationValues(), 2)
 	require.Equal(t, "address", restricted.GetInfos()[0].GetConfigurationValues()[0].GetKey())
 	require.Equal(t, "https://vault.example.com:8200", restricted.GetInfos()[0].GetConfigurationValues()[0].GetValue())
+	require.Equal(t, "token", restricted.GetInfos()[0].GetConfigurationValues()[1].GetKey())
+	require.Empty(t, restricted.GetInfos()[0].GetConfigurationValues()[1].GetValue())
+	require.True(t, restricted.GetInfos()[0].GetConfigurationValues()[1].GetSecret())
 }
 
 func TestVaultImageAudit(t *testing.T) {
@@ -130,32 +150,66 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.NoError(t, err)
 	require.Equal(t, 1, len(networkMappings))
 
-	// vault reads its root token from the "vault" configuration (VAULT_TOKEN).
-	conf := &basev0.Configuration{
+	defer func() {
+		_, _ = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+	}()
+
+	const configuredToken = "dev-root-token"
+	firstInit, firstToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, &basev0.Configuration{
 		Origin:         fmt.Sprintf("mod/%s", service.Name),
 		RuntimeContext: resources.NewRuntimeContextFree(),
-		Infos: []*basev0.ConfigurationInformation{
-			{Name: "vault",
-				ConfigurationValues: []*basev0.ConfigurationValue{
-					{Key: "VAULT_TOKEN", Value: "dev-root-token"},
-				},
-			},
-		},
-	}
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "vault",
+			ConfigurationValues: []*basev0.ConfigurationValue{{
+				Key:   "VAULT_TOKEN",
+				Value: configuredToken,
+			}},
+		}},
+	})
+	require.Len(t, firstInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
+	require.Equal(t, configuredToken, firstToken)
 
-	// Init boots vault (nix: `vault server -dev` off the nix binary) and waits
-	// for it to bind. This is where the "exited before binding" regression bites.
+	_, err = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+	require.NoError(t, err)
+
+	secondInit, secondToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, nil)
+	require.Len(t, secondInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
+	require.NotEqual(t, firstToken, secondToken)
+}
+
+func initAndStartRuntime(
+	t *testing.T,
+	ctx context.Context,
+	runtime *Runtime,
+	runtimeContext *basev0.RuntimeContext,
+	networkMappings []*basev0.NetworkMapping,
+	configuration *basev0.Configuration,
+) (*runtimev0.InitResponse, string) {
+	t.Helper()
+
+	// Init boots vault, publishes its token to dependants, and replaces that
+	// publication on a later Init.
 	init, err := runtime.Init(ctx, &runtimev0.InitRequest{
 		RuntimeContext:          runtimeContext,
-		Configuration:           conf,
+		Configuration:           configuration,
 		ProposedNetworkMappings: networkMappings,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, init)
+	require.Equal(t, runtimev0.InitStatus_READY, init.GetStatus().GetState(), init.GetStatus().GetMessage())
 
-	defer func() {
-		_, _ = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
-	}()
+	var token string
+	for _, configuration := range init.GetRuntimeConfigurations() {
+		published, err := resources.GetConfigurationValue(ctx, configuration, "vault", "token")
+		require.NoError(t, err)
+		require.NotEmpty(t, published)
+		if token == "" {
+			token = published
+		} else {
+			require.Equal(t, token, published)
+		}
+	}
+	require.NotEmpty(t, token)
 
 	// Start drives the post-unseal seeding (transit engine + JWT key) over HTTP,
 	// which only succeeds if vault is up and stayed up.
@@ -176,4 +230,6 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	}
 	require.NoError(t, json.NewDecoder(healthResp.Body).Decode(&health))
 	require.Equal(t, "2.0.3", health.Version)
+
+	return init, token
 }

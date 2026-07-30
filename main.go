@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"strings"
 
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/services"
@@ -81,6 +82,9 @@ func (s *Service) VaultTokenFromConfiguration(ctx context.Context, conf *basev0.
 	if err != nil {
 		return "", s.Wool.Wrapf(err, "cannot get vault token")
 	}
+	if strings.TrimSpace(token) == "" {
+		return "", s.Wool.NewError("cannot get vault token: VAULT_TOKEN is missing or empty")
+	}
 	return token, nil
 }
 
@@ -88,8 +92,13 @@ func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance
 	return s.createConnectionConfiguration(instance, &vaultToken)
 }
 
+// CreateRestrictedConnectionConfiguration advertises the Vault connection for a
+// restricted-profile deployment: the address plus an empty, secret token
+// capability. The value is deliberately blank — the plugin never receives or
+// serializes the token; the promotion driver fills it from the external secret.
 func (s *Service) CreateRestrictedConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
-	return s.createConnectionConfiguration(instance, nil)
+	token := ""
+	return s.createConnectionConfiguration(instance, &token)
 }
 
 func (s *Service) createConnectionConfiguration(instance *basev0.NetworkInstance, vaultToken *string) *basev0.Configuration {

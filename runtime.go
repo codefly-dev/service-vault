@@ -65,6 +65,25 @@ func callingContext() *basev0.NetworkAccess {
 	return resources.NewNativeNetworkAccess()
 }
 
+// vaultTokenFromRuntimeConfiguration keeps the local runtime self-contained
+// without weakening deployment builds. A Docker/Nix development Vault is
+// ephemeral, so its root token may be ephemeral too and is exported to
+// dependants only through secret runtime configuration. Deployment still calls
+// VaultTokenFromConfiguration directly and therefore fails closed unless a
+// deployment supplies VAULT_TOKEN.
+func (s *Runtime) vaultTokenFromRuntimeConfiguration(ctx context.Context, conf *basev0.Configuration) (string, error) {
+	if conf != nil {
+		return s.VaultTokenFromConfiguration(ctx, conf)
+	}
+
+	token := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, token); err != nil {
+		return "", s.Wool.Wrapf(err, "cannot generate ephemeral vault token")
+	}
+	s.Wool.Info("generated ephemeral vault token for local runtime")
+	return base64.RawURLEncoding.EncodeToString(token), nil
+}
+
 func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
@@ -95,16 +114,17 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 
 	s.vaultPort = 8200
 
-	s.vaultToken, err = s.VaultTokenFromConfiguration(ctx, req.Configuration)
+	vaultToken, err := s.vaultTokenFromRuntimeConfiguration(ctx, req.Configuration)
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
 
 	// Create connection configs for all network instances
+	runtimeConfigurations := make([]*basev0.Configuration, 0, len(net.Instances))
 	for _, inst := range net.Instances {
-		conf := s.CreateConnectionConfiguration(inst, s.vaultToken)
+		conf := s.CreateConnectionConfiguration(inst, vaultToken)
 		w.Debug("adding configuration", wool.Field("config", resources.MakeConfigurationSummary(conf)), wool.Field("instance", inst))
-		s.Runtime.RuntimeConfigurations = append(s.Runtime.RuntimeConfigurations, conf)
+		runtimeConfigurations = append(runtimeConfigurations, conf)
 	}
 
 	// Store the address for health checks
@@ -112,7 +132,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
-	s.vaultAddress = hostInstance.Address
+	vaultAddress := hostInstance.Address
 
 	// Nix runtime: run `vault server -dev` natively from a nix-provisioned binary
 	// instead of a Docker container — selected when the caller requests
@@ -121,7 +141,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	// unchanged.
 	if rc := req.GetRuntimeContext(); rc != nil && rc.Kind == resources.RuntimeContextNix {
 		s.Infof("using nix runtime for vault on port %d", instance.Port)
-		nixv, errNix := newNixVault(ctx, s.Location, uint16(instance.Port), s.vaultToken, newVaultLogWriter(s.Wool, s.vaultToken))
+		nixv, errNix := newNixVault(ctx, s.Location, uint16(instance.Port), vaultToken, newVaultLogWriter(s.Wool, vaultToken))
 		if errNix != nil {
 			return s.Runtime.InitError(errNix)
 		}
@@ -139,10 +159,10 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		// SIGKILL'd run (which skips Stop) gets its vault reaped by the next
 		// run's startup sweep instead of lingering and holding its port.
 		runner.WithEphemeral()
-		runner.WithOutput(newVaultLogWriter(s.Wool, s.vaultToken))
+		runner.WithOutput(newVaultLogWriter(s.Wool, vaultToken))
 		runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
 		runner.WithEnvironmentVariables(ctx,
-			resources.Env(vaultTokenEnvironmentVariable, s.vaultToken),
+			resources.Env(vaultTokenEnvironmentVariable, vaultToken),
 			resources.Env("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200"),
 			resources.Env("SKIP_SETCAP", "true"),
 		)
@@ -152,6 +172,12 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 			return s.Runtime.InitError(errDocker)
 		}
 	}
+
+	s.vaultToken = vaultToken
+	s.vaultAddress = vaultAddress
+	s.Runtime.Lock()
+	s.Runtime.RuntimeConfigurations = runtimeConfigurations
+	s.Runtime.Unlock()
 
 	w.Debug("init successful")
 	return s.Runtime.InitResponse()

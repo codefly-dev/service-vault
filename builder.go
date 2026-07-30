@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"strings"
 
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
@@ -108,14 +109,17 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	ctx = s.Wool.Inject(ctx)
 	s.Base.SetDockerImage(image)
 
-	return s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
+	var restrictedConfiguration *basev0.Configuration
+	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
 			if services.IsRestrictedOutputProfile(deployment.Profile) {
-				if err := validateRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences()); err != nil {
+				references, err := vaultRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences())
+				if err != nil {
 					return err
 				}
+				deployment.Kubernetes.SecretReferences = references
 			}
 			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewPublicNetworkAccess())
 			if err != nil {
@@ -128,20 +132,48 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 				}
 				return deployment.ExportConfiguration(ctx, s.CreateConnectionConfiguration(instance, vaultToken))
 			}
-			return deployment.ExportConfiguration(ctx, s.CreateRestrictedConnectionConfiguration(instance))
+			// Restricted profiles hand the connection off through the response
+			// (not ExportConfiguration) so the empty token capability reaches the
+			// promotion driver without being injected into the rendered manifests.
+			restrictedConfiguration = s.CreateRestrictedConnectionConfiguration(instance)
+			return nil
 		},
 	})
+	if err != nil ||
+		response.GetState().GetState() != builderv0.DeploymentStatus_SUCCESS ||
+		restrictedConfiguration == nil {
+		return response, err
+	}
+	response.Configuration = restrictedConfiguration
+	return response, nil
 }
 
-func validateRestrictedSecretReferences(references map[string]*builderv0.KubernetesSecretKeyReference) error {
-	reference, ok := references[vaultTokenEnvironmentVariable]
-	if !ok {
-		return fmt.Errorf("restricted profile requires secret reference %q", vaultTokenEnvironmentVariable)
+// vaultRestrictedSecretReferences validates the caller-supplied external-secret
+// references for a restricted deployment and remaps the single canonical Vault
+// token reference onto the environment variable the container consumes. The
+// plugin never receives the secret value — only the reference to it.
+func vaultRestrictedSecretReferences(
+	references map[string]*builderv0.KubernetesSecretKeyReference,
+) (map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	if len(references) != 1 {
+		return nil, fmt.Errorf("restricted profile requires exactly one canonical Vault token secret reference")
+	}
+	var source string
+	var reference *builderv0.KubernetesSecretKeyReference
+	for key, candidate := range references {
+		source = key
+		reference = candidate
+	}
+	if !strings.HasPrefix(source, "CODEFLY__SERVICE_SECRET_CONFIGURATION__") ||
+		!strings.HasSuffix(source, "__VAULT__VAULT_TOKEN") {
+		return nil, fmt.Errorf("restricted profile requires the canonical Vault token secret reference")
 	}
 	if reference.GetOptional() {
-		return fmt.Errorf("restricted secret reference %q must not be optional", vaultTokenEnvironmentVariable)
+		return nil, fmt.Errorf("restricted Vault token secret reference must not be optional")
 	}
-	return nil
+	return map[string]*builderv0.KubernetesSecretKeyReference{
+		vaultTokenEnvironmentVariable: reference,
+	}, nil
 }
 
 func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {

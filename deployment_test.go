@@ -94,18 +94,26 @@ func TestDeploymentProfiles(t *testing.T) {
 		networkMappings,
 		nil,
 		map[string]*builderv0.KubernetesSecretKeyReference{
-			"VAULT_DEV_ROOT_TOKEN_ID": {
+			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 				Name: "vault-credentials",
-				Key:  "root-token",
+				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
 			},
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, restricted.GetState().GetState())
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, restricted.GetState().GetState(), restricted.GetState().GetMessage())
 	output := restricted.GetDeployment().GetKubernetes()
 	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, output.GetProfile())
 	require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
 	require.True(t, output.GetValidation().GetRestricted())
+	// Token handoff: the restricted deployment's connection configuration
+	// advertises an empty, secret token capability the promotion driver fills;
+	// the plugin never receives or serializes the value.
+	require.Len(t, restricted.GetConfiguration().GetInfos()[0].GetConfigurationValues(), 2)
+	tokenCapability := restricted.GetConfiguration().GetInfos()[0].GetConfigurationValues()[1]
+	require.Equal(t, "token", tokenCapability.GetKey())
+	require.Empty(t, tokenCapability.GetValue())
+	require.True(t, tokenCapability.GetSecret())
 	restrictedTree := readManifestTree(t, restrictedDestination)
 	require.NotContains(t, restrictedTree, secret)
 	require.NotContains(t, restrictedTree, base64.StdEncoding.EncodeToString([]byte(secret)))
@@ -115,7 +123,7 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.NotContains(t, restrictedTree, "\nstringData:")
 	require.Contains(t, restrictedTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
 	require.Contains(t, restrictedTree, "name: vault-credentials")
-	require.Contains(t, restrictedTree, "key: root-token")
+	require.Contains(t, restrictedTree, "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN")
 	require.Contains(t, restrictedTree, image.FullName())
 
 	// Boundary: plugin-owned output stays a pure manifest producer. It may not
@@ -163,7 +171,10 @@ func TestRestrictedProfilesRenderIdenticalBundle(t *testing.T) {
 	builder, networkMappings := deploymentBuilder(t)
 
 	references := map[string]*builderv0.KubernetesSecretKeyReference{
-		"VAULT_DEV_ROOT_TOKEN_ID": {Name: "vault-credentials", Key: "root-token"},
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
+			Name: "vault-credentials",
+			Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
+		},
 	}
 	deploy := func(profile builderv0.KubernetesOutputProfile) (*builderv0.KubernetesDeploymentOutput, string) {
 		destination := t.TempDir()
@@ -180,6 +191,36 @@ func TestRestrictedProfilesRenderIdenticalBundle(t *testing.T) {
 	require.Equal(t, neutral.GetBundle().GetDigest(), deprecated.GetBundle().GetDigest(), "identical trees must yield an identical bundle digest")
 	require.True(t, deprecated.GetValidation().GetRestricted())
 	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, deprecated.GetProfile()) //nolint:staticcheck // migration compatibility
+}
+
+func TestEphemeralDeploymentFailsClosedWithoutVaultToken(t *testing.T) {
+	ctx := context.Background()
+	builder, networkMappings := deploymentBuilder(t)
+
+	tests := []struct {
+		name          string
+		configuration *basev0.Configuration
+	}{
+		{name: "nil configuration"},
+		{name: "missing token", configuration: &basev0.Configuration{}},
+		{name: "empty token", configuration: vaultConfiguration("")},
+		{name: "blank token", configuration: vaultConfiguration(" \t")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := builder.Deploy(ctx, deploymentRequest(
+				t.TempDir(),
+				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+				networkMappings,
+				test.configuration,
+				nil,
+			))
+
+			require.NoError(t, err)
+			require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+			require.Contains(t, response.GetState().GetMessage(), "cannot get vault token")
+		})
+	}
 }
 
 func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
@@ -240,7 +281,7 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 	}{
 		{
 			name:    "missing",
-			message: `requires secret reference "VAULT_DEV_ROOT_TOKEN_ID"`,
+			message: `requires exactly one canonical Vault token secret reference`,
 		},
 		{
 			name: "misnamed",
@@ -250,18 +291,18 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 					Key:  "root-token",
 				},
 			},
-			message: `requires secret reference "VAULT_DEV_ROOT_TOKEN_ID"`,
+			message: `requires the canonical Vault token secret reference`,
 		},
 		{
 			name: "optional",
 			references: map[string]*builderv0.KubernetesSecretKeyReference{
-				"VAULT_DEV_ROOT_TOKEN_ID": {
+				"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 					Name:     "vault-credentials",
-					Key:      "root-token",
+					Key:      "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
 					Optional: true,
 				},
 			},
-			message: `secret reference "VAULT_DEV_ROOT_TOKEN_ID" must not be optional`,
+			message: `Vault token secret reference must not be optional`,
 		},
 	}
 	for _, test := range tests {
