@@ -89,7 +89,8 @@ func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance
 }
 
 func (s *Service) CreateGitOpsConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
-	return s.createConnectionConfiguration(instance, nil)
+	token := ""
+	return s.createConnectionConfiguration(instance, &token)
 }
 
 func (s *Service) createConnectionConfiguration(instance *basev0.NetworkInstance, vaultToken *string) *basev0.Configuration {
