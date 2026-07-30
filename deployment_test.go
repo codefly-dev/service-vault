@@ -123,6 +123,36 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.Contains(t, gitOpsTree, image.FullName())
 }
 
+func TestEphemeralDeploymentFailsClosedWithoutVaultToken(t *testing.T) {
+	ctx := context.Background()
+	builder, networkMappings := deploymentBuilder(t)
+
+	tests := []struct {
+		name          string
+		configuration *basev0.Configuration
+	}{
+		{name: "nil configuration"},
+		{name: "missing token", configuration: &basev0.Configuration{}},
+		{name: "empty token", configuration: vaultConfiguration("")},
+		{name: "blank token", configuration: vaultConfiguration(" \t")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := builder.Deploy(ctx, deploymentRequest(
+				t.TempDir(),
+				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+				networkMappings,
+				test.configuration,
+				nil,
+			))
+
+			require.NoError(t, err)
+			require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+			require.Contains(t, response.GetState().GetMessage(), "cannot get vault token")
+		})
+	}
+}
+
 func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
 	ctx := context.Background()
 	builder, networkMappings := deploymentBuilder(t)

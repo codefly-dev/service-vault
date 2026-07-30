@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"strings"
 
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/services"
@@ -80,6 +81,9 @@ func (s *Service) VaultTokenFromConfiguration(ctx context.Context, conf *basev0.
 	token, err := resources.GetConfigurationValue(ctx, conf, "vault", "VAULT_TOKEN")
 	if err != nil {
 		return "", s.Wool.Wrapf(err, "cannot get vault token")
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", s.Wool.NewError("cannot get vault token: VAULT_TOKEN is missing or empty")
 	}
 	return token, nil
 }
