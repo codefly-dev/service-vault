@@ -122,6 +122,15 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.Contains(t, restrictedTree, "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN")
 	require.Contains(t, restrictedTree, image.FullName())
 
+	// Guarded manifests that render blank under the restricted profile are
+	// omitted from the signed tree entirely — no empty (or placeholder) stub for
+	// a promotion reviewer to re-verify. The Secret's token is projected at
+	// promotion time; the Namespace is owned by the target cluster.
+	_, err = os.Stat(filepath.Join(restrictedDestination, "overlays", "test", "secret.yaml"))
+	require.True(t, os.IsNotExist(err), "promotable render must omit secret.yaml, not leave a stub")
+	_, err = os.Stat(filepath.Join(restrictedDestination, "base", "namespace.yaml"))
+	require.True(t, os.IsNotExist(err), "promotable render must omit namespace.yaml, not leave a stub")
+
 	// Boundary: plugin-owned output stays a pure manifest producer. It may not
 	// carry reconciliation control-plane objects or repository source bindings —
 	// that responsibility belongs to the separate promotion driver, not here.
