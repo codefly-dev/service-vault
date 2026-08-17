@@ -58,7 +58,6 @@ func (s *Builder) Update(ctx context.Context, req *builderv0.UpdateRequest) (*bu
 
 func (s *Builder) Sync(ctx context.Context, req *builderv0.SyncRequest) (*builderv0.SyncResponse, error) {
 	defer s.Wool.Catch()
-	ctx = s.Wool.Inject(ctx)
 	return s.Builder.SyncResponse()
 }
 
@@ -107,7 +106,7 @@ func (s *Builder) Upgrade(ctx context.Context, req *builderv0.UpgradeRequest) (*
 func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
-	s.Base.SetDockerImage(image)
+	s.SetDockerImage(image)
 
 	var restrictedConfiguration *basev0.Configuration
 	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
@@ -121,7 +120,13 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 				}
 				deployment.Kubernetes.SecretReferences = references
 			}
-			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewPublicNetworkAccess())
+			// Vault's HTTP endpoint is visibility: module, so every deploy profile
+			// receives a container-only mapping (a non-DNS internal endpoint has no
+			// public instance) and its consumers reach it in-cluster. Resolve the
+			// container Service address for both the restricted render and local
+			// apply — the workload and its dependants run inside the cluster in both
+			// cases, and requesting a public instance that never exists hard-fails.
+			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewContainerNetworkAccess())
 			if err != nil {
 				return err
 			}
@@ -179,8 +184,8 @@ func vaultRestrictedSecretReferences(
 func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {
 	defer s.Wool.Catch()
 
-	if s.Settings.TransitKey == "" {
-		s.Settings.TransitKey = "api-keys"
+	if s.TransitKey == "" {
+		s.TransitKey = "api-keys"
 	}
 
 	err := s.Templates(ctx, s.Settings, services.WithFactory(factoryFS))
@@ -203,7 +208,7 @@ func (s *Builder) CreateEndpoints(ctx context.Context) error {
 	if err != nil {
 		return s.Wool.Wrapf(err, "cannot load http api")
 	}
-	endpoint := s.Base.BaseEndpoint(standards.HTTP)
+	endpoint := s.BaseEndpoint(standards.HTTP)
 	endpoint.Visibility = resources.VisibilityModule
 	s.HttpEndpoint, err = resources.NewAPI(ctx, endpoint, resources.ToHTTPAPI(httpAPI))
 	if err != nil {

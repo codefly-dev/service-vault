@@ -45,9 +45,9 @@ func TestCreateToRunDocker(t *testing.T) {
 
 func TestVaultImagePin(t *testing.T) {
 	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime", image.Name)
-	require.Equal(t, "runtime-v2.0.3-patched.5", image.Tag)
-	require.Equal(t, "sha256:f5ccde0eb6844d754c2bf693da1375023cf9827bfa2135c8c743bdd816bda94d", image.Digest)
-	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:f5ccde0eb6844d754c2bf693da1375023cf9827bfa2135c8c743bdd816bda94d", image.FullName())
+	require.Equal(t, "runtime-v2.0.3-patched.6", image.Tag)
+	require.Equal(t, "sha256:8ce3f8f23fe0b1280fca8fe5fc0466cd188ff4715d5a7573819a44d538dbfe6b", image.Digest)
+	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:8ce3f8f23fe0b1280fca8fe5fc0466cd188ff4715d5a7573819a44d538dbfe6b", image.FullName())
 }
 
 func TestAgentVersion(t *testing.T) {
@@ -222,7 +222,7 @@ func initAndStartRuntime(
 	require.NoError(t, err)
 	healthResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer healthResp.Body.Close()
+	defer func() { _ = healthResp.Body.Close() }()
 	require.Equal(t, http.StatusOK, healthResp.StatusCode)
 
 	var health struct {
