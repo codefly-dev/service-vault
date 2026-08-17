@@ -337,7 +337,7 @@ func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
 
 	response, err := builder.Deploy(ctx, deploymentRequest(
 		t.TempDir(),
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, //nolint:staticcheck // migration compatibility
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		containerOnly,
 		nil,
 		references,
@@ -348,6 +348,9 @@ func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
 	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
 	require.NoError(t, err)
 	require.Equal(t, containerVaultInstance().GetAddress(), address)
+	// The advertised runtime context follows the resolved instance's access kind;
+	// a container instance must yield a container-scoped connection configuration.
+	require.Equal(t, resources.RuntimeContextContainer, response.GetConfiguration().GetRuntimeContext().GetKind())
 }
 
 // Local apply is served the same container-only mapping: the CLI generates
