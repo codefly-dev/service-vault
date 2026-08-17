@@ -130,7 +130,7 @@ func (n *nixVault) waitReady(ctx context.Context) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", n.port)
 	url := fmt.Sprintf("http://%s/v1/sys/health", addr)
 	if n.out != nil {
-		fmt.Fprintf(n.out, "waiting for vault readiness on %s\n", addr)
+		_, _ = fmt.Fprintf(n.out, "waiting for vault readiness on %s\n", addr)
 	}
 	client := &http.Client{Timeout: 1 * time.Second}
 	deadline := time.Now().Add(30 * time.Second)

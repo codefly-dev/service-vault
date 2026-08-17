@@ -198,8 +198,8 @@ func (s *Runtime) WaitForReady(ctx context.Context) error {
 
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			// Vault returns 200 when initialized, unsealed, and active
 			if resp.StatusCode == 200 {
 				s.Wool.Debug("vault is ready!")
@@ -227,7 +227,7 @@ func (s *Runtime) enableTransit(ctx context.Context) error {
 	s.Wool.Debug("transit engine enabled")
 
 	// Create the transit key for API keys
-	keyName := s.Settings.TransitKey
+	keyName := s.TransitKey
 	if keyName == "" {
 		keyName = "api-keys"
 	}
@@ -293,7 +293,7 @@ func (s *Runtime) vaultRequest(ctx context.Context, method, path, body string) e
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
 

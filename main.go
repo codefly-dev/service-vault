@@ -110,7 +110,7 @@ func (s *Service) createConnectionConfiguration(instance *basev0.NetworkInstance
 		values = append(values, &basev0.ConfigurationValue{Key: "token", Value: *vaultToken, Secret: true})
 	}
 	return &basev0.Configuration{
-		Origin:         s.Base.Unique(),
+		Origin:         s.Unique(),
 		RuntimeContext: resources.RuntimeContextFromInstance(instance),
 		Infos: []*basev0.ConfigurationInformation{
 			{Name: "vault",

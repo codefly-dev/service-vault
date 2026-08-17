@@ -41,9 +41,11 @@ func TestDeploymentProfiles(t *testing.T) {
 		Service: identity.Name,
 		Api:     "http",
 	}
+	// A visibility: module endpoint has no DNS, so the remote network manager
+	// emits a container-only mapping in every deploy profile — no public instance.
 	networkMappings := []*basev0.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{publicVaultInstance(), containerVaultInstance()},
+		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
 	}}
 
 	const secret = "must-stay-ephemeral"
@@ -348,6 +350,34 @@ func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
 	require.Equal(t, containerVaultInstance().GetAddress(), address)
 }
 
+// Local apply is served the same container-only mapping: the CLI generates
+// remote-network-manager mappings for every deploy profile, so a module-visibility
+// vault has no public instance under EPHEMERAL_LOCAL_APPLY either. The ephemeral
+// profile must resolve the container instance and advertise its in-cluster Service
+// address — the workload and its dependants run inside the cluster here too.
+func TestEphemeralDeploymentResolvesContainerAddress(t *testing.T) {
+	ctx := context.Background()
+	builder, _ := deploymentBuilder(t)
+	containerOnly := []*basev0.NetworkMapping{{
+		Endpoint:  builder.HttpEndpoint,
+		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
+	}}
+
+	response, err := builder.Deploy(ctx, deploymentRequest(
+		t.TempDir(),
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		containerOnly,
+		vaultConfiguration("must-stay-ephemeral"),
+		nil,
+	))
+	require.NoError(t, err)
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+
+	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
+	require.NoError(t, err)
+	require.Equal(t, containerVaultInstance().GetAddress(), address)
+}
+
 func deploymentBuilder(t *testing.T) (*Builder, []*basev0.NetworkMapping) {
 	t.Helper()
 	ctx := context.Background()
@@ -369,18 +399,8 @@ func deploymentBuilder(t *testing.T) (*Builder, []*basev0.NetworkMapping) {
 	}
 	return builder, []*basev0.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{publicVaultInstance(), containerVaultInstance()},
+		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
 	}}
-}
-
-func publicVaultInstance() *basev0.NetworkInstance {
-	return &basev0.NetworkInstance{
-		Access:   resources.NewPublicNetworkAccess(),
-		Hostname: "vault.example.com",
-		Host:     "vault.example.com:8200",
-		Port:     8200,
-		Address:  "https://vault.example.com",
-	}
 }
 
 func containerVaultInstance() *basev0.NetworkInstance {

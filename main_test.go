@@ -222,7 +222,7 @@ func initAndStartRuntime(
 	require.NoError(t, err)
 	healthResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer healthResp.Body.Close()
+	defer func() { _ = healthResp.Body.Close() }()
 	require.Equal(t, http.StatusOK, healthResp.StatusCode)
 
 	var health struct {
