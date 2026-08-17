@@ -42,14 +42,8 @@ func TestDeploymentProfiles(t *testing.T) {
 		Api:     "http",
 	}
 	networkMappings := []*basev0.NetworkMapping{{
-		Endpoint: builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{{
-			Access:   resources.NewPublicNetworkAccess(),
-			Hostname: "vault.example.com",
-			Host:     "vault.example.com:8200",
-			Port:     8200,
-			Address:  "https://vault.example.com",
-		}},
+		Endpoint:  builder.HttpEndpoint,
+		Instances: []*basev0.NetworkInstance{publicVaultInstance(), containerVaultInstance()},
 	}}
 
 	const secret = "must-stay-ephemeral"
@@ -321,6 +315,39 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 	}
 }
 
+// A visibility: module endpoint has no public instance, so the remote network
+// manager emits a container-only mapping. The restricted profile must resolve
+// that container instance and advertise its in-cluster Service address, not
+// demand a public one that will never exist.
+func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
+	ctx := context.Background()
+	builder, _ := deploymentBuilder(t)
+	containerOnly := []*basev0.NetworkMapping{{
+		Endpoint:  builder.HttpEndpoint,
+		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
+	}}
+	references := map[string]*builderv0.KubernetesSecretKeyReference{
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
+			Name: "vault-credentials",
+			Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
+		},
+	}
+
+	response, err := builder.Deploy(ctx, deploymentRequest(
+		t.TempDir(),
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, //nolint:staticcheck // migration compatibility
+		containerOnly,
+		nil,
+		references,
+	))
+	require.NoError(t, err)
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+
+	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
+	require.NoError(t, err)
+	require.Equal(t, containerVaultInstance().GetAddress(), address)
+}
+
 func deploymentBuilder(t *testing.T) (*Builder, []*basev0.NetworkMapping) {
 	t.Helper()
 	ctx := context.Background()
@@ -341,15 +368,29 @@ func deploymentBuilder(t *testing.T) (*Builder, []*basev0.NetworkMapping) {
 		Api:     "http",
 	}
 	return builder, []*basev0.NetworkMapping{{
-		Endpoint: builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{{
-			Access:   resources.NewPublicNetworkAccess(),
-			Hostname: "vault.example.com",
-			Host:     "vault.example.com:8200",
-			Port:     8200,
-			Address:  "https://vault.example.com",
-		}},
+		Endpoint:  builder.HttpEndpoint,
+		Instances: []*basev0.NetworkInstance{publicVaultInstance(), containerVaultInstance()},
 	}}
+}
+
+func publicVaultInstance() *basev0.NetworkInstance {
+	return &basev0.NetworkInstance{
+		Access:   resources.NewPublicNetworkAccess(),
+		Hostname: "vault.example.com",
+		Host:     "vault.example.com:8200",
+		Port:     8200,
+		Address:  "https://vault.example.com",
+	}
+}
+
+func containerVaultInstance() *basev0.NetworkInstance {
+	return &basev0.NetworkInstance{
+		Access:   resources.NewContainerNetworkAccess(),
+		Hostname: "vault",
+		Host:     "vault:8200",
+		Port:     8200,
+		Address:  "http://vault:8200",
+	}
 }
 
 func vaultConfiguration(token string) *basev0.Configuration {

@@ -121,7 +121,15 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 				}
 				deployment.Kubernetes.SecretReferences = references
 			}
-			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, resources.NewPublicNetworkAccess())
+			// Vault's HTTP endpoint is visibility: module, so a restricted render
+			// carries only a container instance (no DNS ⇒ no public mapping) and
+			// consumers reach it in-cluster. Resolve the container Service address
+			// there; local apply keeps the public localhost instance for the operator.
+			networkAccess := resources.NewContainerNetworkAccess()
+			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1 {
+				networkAccess = resources.NewPublicNetworkAccess()
+			}
+			instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, req.GetNetworkMappings(), s.HttpEndpoint, networkAccess)
 			if err != nil {
 				return err
 			}
