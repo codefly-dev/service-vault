@@ -51,7 +51,7 @@ func TestVaultImagePin(t *testing.T) {
 }
 
 func TestAgentVersion(t *testing.T) {
-	require.Equal(t, "0.0.22", agent.Version)
+	require.Equal(t, "0.0.23", agent.Version)
 }
 
 func TestConnectionConfigurationTokenProfiles(t *testing.T) {
