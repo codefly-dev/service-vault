@@ -332,6 +332,15 @@ func (s *Runtime) Information(ctx context.Context, req *runtimev0.InformationReq
 	return s.Runtime.InformationResponse(ctx, req)
 }
 
+// dockerShutdownAttempts bounds how many times teardown re-runs a container
+// Shutdown. Docker's ContainerRemove sometimes overruns its internal 10s
+// cleanup deadline under CI load ("context deadline exceeded") even though the
+// daemon finishes the removal out of band; a re-attempt then observes the
+// container already gone and returns cleanly, so a slow daemon no longer fails
+// Stop or Destroy (and, in turn, a release). Shutdown is idempotent — it probes
+// for the container first — so retrying is safe.
+const dockerShutdownAttempts = 3
+
 // teardown fully stops vault's runtime — the native nix process or the docker
 // container. Unlike most infra agents, vault does NOT keep its environment
 // alive for reuse: dev-mode is in-memory and stateless, so there is nothing to
@@ -343,17 +352,30 @@ func (s *Runtime) teardown(ctx context.Context) error {
 		s.Wool.Debug("stopping nix vault process")
 		return s.nixRuntime.Stop(ctx)
 	}
-	if s.runnerEnvironment != nil {
-		s.Wool.Debug("shutting down vault container")
-		return s.runnerEnvironment.Shutdown(ctx)
+	env := s.runnerEnvironment
+	if env == nil {
+		// No live handle (e.g. Destroy on a freshly loaded agent that never ran
+		// Init): reconstruct the docker env by name and shut it down.
+		var err error
+		env, err = dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
+		if err != nil {
+			return err
+		}
 	}
-	// No live handle (e.g. Destroy on a freshly loaded agent that never ran
-	// Init): reconstruct the docker env by name and shut it down.
-	runner, err := dockerrun.NewDockerHeadlessEnvironment(ctx, image, s.UniqueWithWorkspace())
-	if err != nil {
-		return err
+	s.Wool.Debug("shutting down vault container")
+	return s.retryShutdown(ctx, env.Shutdown)
+}
+
+func (s *Runtime) retryShutdown(ctx context.Context, shutdown func(context.Context) error) error {
+	var err error
+	for attempt := 1; attempt <= dockerShutdownAttempts; attempt++ {
+		if err = shutdown(ctx); err == nil {
+			return nil
+		}
+		s.Wool.Warn("vault container shutdown attempt failed",
+			wool.Field("attempt", attempt), wool.ErrField(err))
 	}
-	return runner.Shutdown(ctx)
+	return err
 }
 
 func (s *Runtime) Stop(ctx context.Context, req *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
