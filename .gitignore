@@ -5,3 +5,5 @@ dist/
 
 # Compiled agent binary — never track binaries.
 /service-vault
+# Built agent binary (rebuilt by `codefly agent build`).
+service-vault
