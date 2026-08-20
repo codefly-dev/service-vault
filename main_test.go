@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestRuntimeMintsEphemeralVaultTokenWhenConfigurationIsAbsent(t *testing.T) {
@@ -50,8 +52,24 @@ func TestVaultImagePin(t *testing.T) {
 	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:8ce3f8f23fe0b1280fca8fe5fc0466cd188ff4715d5a7573819a44d538dbfe6b", image.FullName())
 }
 
+// TestAgentVersion asserts the embedded agent identity actually resolves from
+// agent.codefly.yaml. It deliberately does NOT hardcode the version: `codefly
+// publish` bumps the manifest and then runs release CI, so a frozen literal
+// fails its own release every time and can only be satisfied by hand-editing
+// this file ahead of each bump (see "chore: update test to expect v0.0.23").
+// Comparing against the manifest keeps the real coverage — that the embed is
+// wired and non-empty — without the drift.
 func TestAgentVersion(t *testing.T) {
-	require.Equal(t, "0.0.23", agent.Version)
+	raw, err := os.ReadFile("agent.codefly.yaml")
+	require.NoError(t, err)
+
+	var manifest struct {
+		Version string `yaml:"version"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &manifest))
+
+	require.NotEmpty(t, manifest.Version)
+	require.Equal(t, manifest.Version, agent.Version)
 }
 
 func TestConnectionConfigurationTokenProfiles(t *testing.T) {
