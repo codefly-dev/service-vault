@@ -101,6 +101,18 @@ func TestVaultImageAudit(t *testing.T) {
 	require.Empty(t, response.GetFindings())
 }
 
+// TestVaultImageSBOM scans the pinned runtime image end to end. The syft
+// invocation lives in core (SBOMContainer), so a core re-pin can silently
+// change how the scan runs — sizing, cache location, output flags. Exercising
+// the real container here makes such a break fail in CI instead of the field.
+func TestVaultImageSBOM(t *testing.T) {
+	response, err := NewBuilder().SBOM(context.Background(), &builderv0.SBOMRequest{})
+	require.NoError(t, err)
+	require.Equal(t, builderv0.SBOMStatus_COMPLETE, response.GetState().GetState(), "message: %s", response.GetState().GetMessage())
+	require.NotEmpty(t, response.GetBom().GetComponents())
+	require.NotEmpty(t, response.GetSha256())
+}
+
 // TestCreateToRunNix runs the SAME full lifecycle against the nix runtime —
 // the Docker-free backend used on hosts without Docker. Requires nix.
 //
