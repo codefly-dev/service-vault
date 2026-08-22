@@ -1,9 +1,9 @@
 module github.com/codefly-dev/service-vault
 
-go 1.26
+go 1.27.0
 
 require (
-	github.com/codefly-dev/core v0.3.6
+	github.com/codefly-dev/core v0.3.8
 	github.com/codefly-dev/gortk v0.2.0
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.83.0
