@@ -57,15 +57,10 @@ LABEL org.opencontainers.image.description="HashiCorp Vault runtime rebuilt with
       org.opencontainers.image.title="Codefly Vault runtime" \
       org.opencontainers.image.version="${VAULT_VERSION}"
 ENV NAME=vault
-# Floor libcrypto3/libssl3 at the CVE-2026-14456 fix (3.5.8-r0). apk upgrade
-# only pulls "latest at build time", so a rebuild racing an unpatched branch
-# would silently reship the vulnerable 3.5.7-r0 the pinned base still carries;
-# the explicit floor fails the build closed instead.
 RUN addgroup vault \
     && adduser -S -G vault vault \
     && apk upgrade --no-cache \
-    && apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0" \
-       ca-certificates dumb-init libcap su-exec tzdata zlib \
+    && apk add --no-cache ca-certificates dumb-init libcap su-exec tzdata zlib \
     && mkdir -p /licenses /vault/config /vault/file /vault/logs \
     && chown -R vault:vault /vault
 COPY --from=source /src/LICENSE /licenses/LICENSE
