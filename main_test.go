@@ -32,9 +32,9 @@ func TestCreateToRunDocker(t *testing.T) {
 
 func TestVaultImagePin(t *testing.T) {
 	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime", image.Name)
-	require.Equal(t, "runtime-v2.0.3-patched.8", image.Tag)
-	require.Equal(t, "sha256:0b60cd7b620685d1b772f43a37b2cdcd2afe1376c3119972c43c32092e5b118d", image.Digest)
-	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:0b60cd7b620685d1b772f43a37b2cdcd2afe1376c3119972c43c32092e5b118d", image.FullName())
+	require.Equal(t, "runtime-v2.0.3-patched.9", image.Tag)
+	require.Equal(t, "sha256:5217e3e2d22e2cfbc7e89b68c48bba190d58d3f5e64f941e07b11f04070a94f4", image.Digest)
+	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:5217e3e2d22e2cfbc7e89b68c48bba190d58d3f5e64f941e07b11f04070a94f4", image.FullName())
 }
 
 // TestAgentVersion asserts the embedded agent identity actually resolves from
