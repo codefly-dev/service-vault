@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +34,7 @@ type Runtime struct {
 	// nixRuntime is set instead of runnerEnvironment when the caller requests
 	// RuntimeContextNix — vault runs natively from a nix-provisioned binary.
 	nixRuntime *nixVault
+	localState *localVaultState
 }
 
 func NewRuntime() *Runtime {
@@ -65,25 +68,6 @@ func callingContext() *basev0.NetworkAccess {
 	return resources.NewNativeNetworkAccess()
 }
 
-// vaultTokenFromRuntimeConfiguration keeps the local runtime self-contained
-// without weakening deployment builds. A Docker/Nix development Vault is
-// ephemeral, so its root token may be ephemeral too and is exported to
-// dependants only through secret runtime configuration. Deployment still calls
-// VaultTokenFromConfiguration directly and therefore fails closed unless a
-// deployment supplies VAULT_TOKEN.
-func (s *Runtime) vaultTokenFromRuntimeConfiguration(ctx context.Context, conf *basev0.Configuration) (string, error) {
-	if conf != nil {
-		return s.VaultTokenFromConfiguration(ctx, conf)
-	}
-
-	token := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, token); err != nil {
-		return "", s.Wool.Wrapf(err, "cannot generate ephemeral vault token")
-	}
-	s.Wool.Info("generated ephemeral vault token for local runtime")
-	return base64.RawURLEncoding.EncodeToString(token), nil
-}
-
 func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
@@ -114,19 +98,28 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 
 	s.vaultPort = 8200
 
-	vaultToken, err := s.vaultTokenFromRuntimeConfiguration(ctx, req.Configuration)
+	var vaultToken string
+	if req.Configuration != nil {
+		vaultToken, err = s.VaultTokenFromConfiguration(ctx, req.Configuration)
+		if err != nil {
+			return s.Runtime.InitError(err)
+		}
+	}
+	state, err := openLocalVaultState(filepath.Join(resources.CodeflyHomeDir(), "runtime-cache", s.UniqueWithWorkspace(), "vault-state"))
 	if err != nil {
 		return s.Runtime.InitError(err)
 	}
-
-	// Create connection configs for all network instances
-	runtimeConfigurations := make([]*basev0.Configuration, 0, len(net.Instances))
-	for _, inst := range net.Instances {
-		conf := s.CreateConnectionConfiguration(inst, vaultToken)
-		w.Debug("adding configuration", wool.Field("config", resources.MakeConfigurationSummary(conf)), wool.Field("instance", inst))
-		runtimeConfigurations = append(runtimeConfigurations, conf)
-	}
-
+	s.localState = state
+	ready := false
+	defer func() {
+		if !ready {
+			if s.nixRuntime != nil || s.runnerEnvironment != nil {
+				_ = s.teardown(ctx)
+			} else {
+				state.close()
+			}
+		}
+	}()
 	// Store the address for health checks
 	hostInstance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, s.NetworkMappings, s.HttpEndpoint, callingContext())
 	if err != nil {
@@ -134,7 +127,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	}
 	vaultAddress := hostInstance.Address
 
-	// Nix runtime: run `vault server -dev` natively from a nix-provisioned binary
+	// Nix runtime: run a persistent file-backed Vault from a nix-provisioned binary
 	// instead of a Docker container — selected when the caller requests
 	// RuntimeContextNix (e.g. a host without Docker). vault binds the assigned
 	// port directly, so vaultAddress (used by the transit/JWT seeding below) is
@@ -143,6 +136,10 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		s.Infof("using nix runtime for vault on port %d", instance.Port)
 		nixv, errNix := newNixVault(ctx, s.Location, uint16(instance.Port), vaultToken, newVaultLogWriter(s.Wool, vaultToken))
 		if errNix != nil {
+			return s.Runtime.InitError(errNix)
+		}
+		nixv.configPath = filepath.Join(state.dir, "server.json")
+		if errNix = state.config(nixv.configPath, filepath.Join(state.dir, "vault-data"), fmt.Sprintf("127.0.0.1:%d", instance.Port)); errNix != nil {
 			return s.Runtime.InitError(errNix)
 		}
 		if errNix = nixv.Init(ctx); errNix != nil {
@@ -155,17 +152,17 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		if errDocker != nil {
 			return s.Runtime.InitError(errDocker)
 		}
-		// vault dev-mode is stateless — mark the container ephemeral so a
-		// SIGKILL'd run (which skips Stop) gets its vault reaped by the next
-		// run's startup sweep instead of lingering and holding its port.
+		// Containers remain replaceable; their file backend and local custody persist.
 		runner.WithEphemeral()
 		runner.WithOutput(newVaultLogWriter(s.Wool, vaultToken))
 		runner.WithPortMapping(ctx, uint16(instance.Port), s.vaultPort)
-		runner.WithEnvironmentVariables(ctx,
-			resources.Env(vaultTokenEnvironmentVariable, vaultToken),
-			resources.Env("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200"),
-			resources.Env("SKIP_SETCAP", "true"),
-		)
+		runner.WithUser(strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()))
+		runner.WithMount(state.dir, "/vault/file")
+		if err = state.config(filepath.Join(state.dir, "server.json"), "/vault/file/vault-data", "0.0.0.0:8200"); err != nil {
+			return s.Runtime.InitError(err)
+		}
+		runner.WithCommand("vault", "server", "-config=/vault/file/server.json")
+		runner.WithEnvironmentVariables(ctx, resources.Env("SKIP_SETCAP", "true"))
 		s.runnerEnvironment = runner
 		w.Debug("init for runner environment: will start container")
 		if errDocker = s.runnerEnvironment.Init(ctx); errDocker != nil {
@@ -173,6 +170,16 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		}
 	}
 
+	vaultToken, err = state.bootstrap(ctx, vaultAddress, vaultToken)
+	if err != nil {
+		_ = s.teardown(ctx)
+		return s.Runtime.InitError(err)
+	}
+	runtimeConfigurations := make([]*basev0.Configuration, 0, len(net.Instances))
+	for _, inst := range net.Instances {
+		runtimeConfigurations = append(runtimeConfigurations, s.CreateConnectionConfiguration(inst, vaultToken))
+	}
+	ready = true
 	s.vaultToken = vaultToken
 	s.vaultAddress = vaultAddress
 	s.Runtime.Lock()
@@ -343,11 +350,15 @@ const dockerShutdownAttempts = 3
 
 // teardown fully stops vault's runtime — the native nix process or the docker
 // container. Unlike most infra agents, vault does NOT keep its environment
-// alive for reuse: dev-mode is in-memory and stateless, so there is nothing to
-// preserve, and a lingering vault only orphans its port and bleeds stale state
-// into the next run (the failure mode that makes a later health probe fail).
+// alive for reuse. Its state and custody survive separately in runtime-cache;
+// container/process teardown must not delete them.
 // Shared by Stop and Destroy.
-func (s *Runtime) teardown(ctx context.Context) error {
+func (s *Runtime) teardown(ctx context.Context) (resultErr error) {
+	defer func() {
+		if resultErr == nil {
+			s.localState.close()
+		}
+	}()
 	if s.nixRuntime != nil {
 		s.Wool.Debug("stopping nix vault process")
 		return s.nixRuntime.Stop(ctx)

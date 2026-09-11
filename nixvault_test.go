@@ -7,9 +7,9 @@ import (
 
 func TestVaultServerArgsKeepRootTokenSecret(t *testing.T) {
 	token := "root-token-that-must-not-appear"
-	n := &nixVault{port: 18200, token: token}
+	n := &nixVault{port: 18200, token: token, configPath: "/local-vault/server.json"}
 	args := strings.Join(n.serverArgs(), " ")
-	if strings.Contains(args, token) || strings.Contains(args, "dev-root-token-id") {
+	if strings.Contains(args, token) || strings.Contains(args, "-dev") {
 		t.Fatalf("Vault root token leaked into process argv: %q", args)
 	}
 }

@@ -3,15 +3,9 @@ package main
 // nixvault.go — Docker-free vault runtime (mirrors postgres' nixpg.go, neo4j's
 // nixneo4j.go, redis' nixredis.go).
 //
-// The vault service agent runs the server in a container by default
-// (NewDockerHeadlessEnvironment, `vault server -dev`). On hosts without Docker,
-// the same agent runs vault NATIVELY from a nix-provisioned binary: the codefly
-// NixEnvironment materializes `vault` from the embedded flake (nixpkgs is
-// instantiated with allowUnfree since Vault is BUSL), and this file launches
-// `vault server -dev` bound to the agent-assigned port with the configured root
-// token. Dev mode is in-memory and auto-unsealed, so there is no data dir or
-// unseal step — the post-init transit/JWT seeding (HTTP, via vaultAddress) is
-// unchanged across runtimes.
+// Docker and Nix both run a file-backed server. Runtime supplies its persistent
+// configuration and owns initialization, unsealing and credential custody.
+// This adapter owns only binary provisioning and the native process lifecycle.
 
 import (
 	"context"
@@ -23,7 +17,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/base"
 )
 
@@ -33,14 +26,15 @@ var vaultFlakeNix string
 //go:embed nix/flake.lock
 var vaultFlakeLock string
 
-// nixVault runs a native `vault server -dev` off a nix-provisioned binary.
+// nixVault runs a native file-backed Vault from a nix-provisioned binary.
 type nixVault struct {
-	env      *runners.NixEnvironment
-	flakeDir string
-	port     uint16
-	token    string
-	out      io.Writer
-	proc     runners.Proc
+	env        *runners.NixEnvironment
+	flakeDir   string
+	port       uint16
+	token      string
+	configPath string
+	out        io.Writer
+	proc       runners.Proc
 	// serverCtx is the context vault runs under. It MUST outlive Init: starting
 	// vault under the Init RPC's ctx kills it the instant Init returns. Cancelled
 	// only by Stop.
@@ -49,7 +43,7 @@ type nixVault struct {
 }
 
 // newNixVault materializes the embedded flake under baseDir/nix and prepares a
-// native vault. Dev mode keeps no on-disk state, so there is no data dir.
+// native Vault. Runtime supplies configPath before Init.
 func newNixVault(ctx context.Context, baseDir string, port uint16, token string, out io.Writer) (*nixVault, error) {
 	flakeDir := filepath.Join(baseDir, "nix")
 	if err := os.MkdirAll(flakeDir, 0o755); err != nil {
@@ -75,7 +69,7 @@ func newNixVault(ctx context.Context, baseDir string, port uint16, token string,
 	}, nil
 }
 
-// Init materializes the nix env, launches `vault server -dev`, and waits for
+// Init materializes the nix env, launches the configured server, and waits for
 // the HTTP health endpoint to answer.
 func (n *nixVault) Init(ctx context.Context) error {
 	if err := n.env.Init(ctx); err != nil {
@@ -87,16 +81,15 @@ func (n *nixVault) Init(ctx context.Context) error {
 	return n.waitReady(ctx)
 }
 
-// startServer launches `vault server -dev` bound to loopback on the assigned
-// port with the configured root token. Dev mode is in-memory + auto-unsealed.
+// startServer launches the persistent server without credentials in argv or env.
 func (n *nixVault) startServer(ctx context.Context) error {
+	if n.configPath == "" {
+		return fmt.Errorf("persistent Vault configuration is required")
+	}
 	proc, err := n.env.NewProcess("vault", n.serverArgs()...)
 	if err != nil {
 		return err
 	}
-	// Vault supports VAULT_DEV_ROOT_TOKEN_ID directly. Environment injection
-	// keeps the root token out of process listings and diagnostic argv dumps.
-	proc.WithEnvironmentVariables(ctx, resources.Env("VAULT_DEV_ROOT_TOKEN_ID", n.token))
 	if n.out != nil {
 		proc.WithOutput(n.out)
 	}
@@ -110,18 +103,14 @@ func (n *nixVault) startServer(ctx context.Context) error {
 }
 
 func (n *nixVault) serverArgs() []string {
-	return []string{
-		"server",
-		"-dev",
-		fmt.Sprintf("-dev-listen-address=127.0.0.1:%d", n.port),
-	}
+	return []string{"server", "-config=" + n.configPath}
 }
 
 // waitReady polls vault's health endpoint until it responds. Any HTTP status
-// counts as ready: dev mode returns 200 (initialized + unsealed + active), but
-// a reachable endpoint at all proves the server is up.
+// proves the server is reachable. Runtime then initializes/unseals and verifies
+// active health before exposing the service as ready.
 //
-// It also watches the server process: a `vault server -dev` that exits right
+// It also watches the server process: a Vault server that exits right
 // after launch (port already bound, bad flag, crash) would otherwise look
 // identical to a slow start — the probe just sees "connection refused" for the
 // whole 30s and reports a misleading timeout. Detecting the dead process turns

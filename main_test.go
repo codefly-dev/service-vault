@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,22 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
-
-func TestRuntimeMintsEphemeralVaultTokenWhenConfigurationIsAbsent(t *testing.T) {
-	runtime := NewRuntime()
-	tokens := make([]string, 2)
-	for i := range tokens {
-		token, err := runtime.vaultTokenFromRuntimeConfiguration(context.Background(), nil)
-
-		require.NoError(t, err)
-		decoded, err := base64.RawURLEncoding.DecodeString(token)
-		require.NoError(t, err)
-		require.Len(t, decoded, 32)
-		tokens[i] = token
-	}
-
-	require.NotEqual(t, tokens[0], tokens[1])
-}
 
 // TestCreateToRunDocker runs the full agent lifecycle against the Docker
 // runtime (the default container backend).
@@ -117,7 +100,7 @@ func TestVaultImageSBOM(t *testing.T) {
 // the Docker-free backend used on hosts without Docker. Requires nix.
 //
 // This is the test that exercises `nixVault` end to end: Init materializes the
-// flake, launches `vault server -dev`, and waits for /v1/sys/health; Start then
+// flake, launches a file-backed Vault, and waits for /v1/sys/health; Start then
 // drives the post-unseal transit/JWT seeding over HTTP. A regression where the
 // nix-launched vault starts, unseals, then exits before binding (the failure
 // that surfaced only at `codefly run` time) fails HERE instead of in the field.
@@ -204,7 +187,7 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 
 	secondInit, secondToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, nil)
 	require.Len(t, secondInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
-	require.NotEqual(t, firstToken, secondToken)
+	require.Equal(t, firstToken, secondToken, "local custody must survive runtime replacement")
 }
 
 func initAndStartRuntime(
