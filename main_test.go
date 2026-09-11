@@ -118,6 +118,8 @@ func TestCreateToRunNix(t *testing.T) {
 // testCreateToRun drives Load → Init → Start → GET /v1/sys/health for one
 // runtime context, so docker and nix exercise the identical agent path.
 func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
+	// Keep all runtime custody and caches owned by this test, including on failure.
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	wool.SetGlobalLogLevel(wool.DEBUG)
 	ctx := context.Background()
 

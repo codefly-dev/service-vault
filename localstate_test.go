@@ -63,7 +63,7 @@ func TestLocalVaultRefusesMismatchedCustodyAndStorage(t *testing.T) {
 					w.WriteHeader(500)
 					return
 				}
-				fmt.Fprintf(w, `{"initialized":%t}`, initialized)
+				_, _ = fmt.Fprintf(w, `{"initialized":%t}`, initialized)
 			}))
 			defer server.Close()
 			if _, err = s.bootstrap(t.Context(), server.URL, ""); err == nil {
@@ -157,6 +157,20 @@ func TestLocalVaultRestartKeepsCiphertext(t *testing.T) {
 	}
 	if _, err = state.bootstrap(ctx, address, ""); err == nil {
 		t.Fatal("initialized storage accepted mismatched custody")
+	}
+	if err = os.WriteFile(custodyPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	custody, err = state.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	custody.AccessToken = "unrelated-access-token"
+	if err = state.save(custody); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.bootstrap(ctx, address, ""); err == nil {
+		t.Fatal("initialized storage accepted mismatched access custody")
 	}
 	if err = os.WriteFile(custodyPath, original, 0600); err != nil {
 		t.Fatal(err)

@@ -81,7 +81,7 @@ func (s *localVaultState) save(c *localVaultCredentials) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err = f.Write(raw); err == nil {
 		err = f.Sync()
 	}
@@ -99,7 +99,7 @@ func (s *localVaultState) save(c *localVaultCredentials) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 
@@ -125,7 +125,7 @@ func localVaultCall(ctx context.Context, address, method, path, token string, bo
 	if err != nil {
 		return fmt.Errorf("local Vault request %s: %w", path, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode >= 400 {
 		return fmt.Errorf("local Vault %s returned HTTP %d", path, response.StatusCode)
 	}
@@ -161,10 +161,10 @@ func (s *localVaultState) bootstrap(ctx context.Context, address, preferredToken
 		return "", err
 	}
 	if initialized.Initialized && c == nil {
-		return "", errors.New("Vault is initialized but local custody is missing; restore credentials.json, refusing to replace keys")
+		return "", errors.New("local Vault is initialized but local custody is missing; restore credentials.json, refusing to replace keys")
 	}
 	if !initialized.Initialized && c != nil {
-		return "", errors.New("Vault storage is missing but local custody exists; restore vault-data, refusing to replace keys")
+		return "", errors.New("local Vault storage is missing but local custody exists; restore vault-data, refusing to replace keys")
 	}
 	if !initialized.Initialized {
 		var result struct {
@@ -218,8 +218,15 @@ func (s *localVaultState) bootstrap(ctx context.Context, address, preferredToken
 			return "", err
 		}
 	}
-	if c.AccessToken == "" {
-		return c.RootToken, nil
+	accessToken := c.AccessToken
+	if accessToken == "" {
+		accessToken = c.RootToken
 	}
-	return c.AccessToken, nil
+	// Custody can be stale or belong to another server even when unseal and
+	// root access succeed. Do not publish a token that Vault rejects, or
+	// silently replace it: restore valid custody first.
+	if err = localVaultCall(ctx, address, "GET", "/v1/auth/token/lookup-self", accessToken, nil, nil); err != nil {
+		return "", fmt.Errorf("validate local Vault access custody: %w", err)
+	}
+	return accessToken, nil
 }
