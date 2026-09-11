@@ -46,9 +46,29 @@ jobs:
           docker run --rm "${IMAGE}@${{ steps.build.outputs.digest }}" version | grep -F 'Vault v2.0.3'
           test "$(docker image inspect "${IMAGE}@${{ steps.build.outputs.digest }}" --format '{{.Config.User}}')" = vault
 
-      - name: Audit image
-        run: >-
-          docker run --rm --network bridge
-          aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
-          image --quiet --severity HIGH,CRITICAL --exit-code 1
-          "${IMAGE}@${{ steps.build.outputs.digest }}"
+      - name: Audit image and generate SBOMs
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p evidence
+          status=0
+          for arch in amd64 arm64; do
+            docker run --rm --network bridge -v "$PWD/evidence:/evidence" \
+              aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f \
+              image --quiet --platform "linux/$arch" --severity HIGH,CRITICAL --exit-code 1 \
+              --format json --output "/evidence/audit-$arch.json" "${IMAGE}@${DIGEST}" || status=1
+            docker run --rm --network bridge -v "$PWD/evidence:/evidence" \
+              aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f \
+              image --quiet --platform "linux/$arch" --format cyclonedx \
+              --output "/evidence/sbom-$arch.cdx.json" "${IMAGE}@${DIGEST}" || status=1
+          done
+          printf '%s\n' "${IMAGE}@${DIGEST}" > evidence/image.txt
+          exit "$status"
+
+      - name: Upload audit and SBOM evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vault-runtime-evidence
+          path: evidence/
+          if-no-files-found: error
