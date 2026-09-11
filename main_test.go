@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -106,7 +107,10 @@ func TestVaultImageSBOM(t *testing.T) {
 // that surfaced only at `codefly run` time) fails HERE instead of in the field.
 func TestCreateToRunNix(t *testing.T) {
 	if !runners.CheckNixInstalled() || !runners.IsNixSupported() {
-		t.Skip("nix not installed/supported on this host")
+		if os.Getenv("VAULT_REQUIRE_NIX") == "1" {
+			t.Fatal("Nix qualification requires a supported Nix installation")
+		}
+		t.Skip("nix not installed/supported on this host; required on the Nix CI runner")
 	}
 	testCreateToRun(t, resources.NewRuntimeContextNix())
 }
@@ -182,12 +186,42 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.Len(t, firstInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
 	require.Equal(t, configuredToken, firstToken)
 
+	// Write through the consumer APIs before stopping. Token equality alone
+	// cannot prove that encryption keys or KV contents were retained.
+	plaintext := base64.StdEncoding.EncodeToString([]byte("owned-lifecycle-fixture"))
+	var encrypted struct {
+		Data struct {
+			Ciphertext string `json:"ciphertext"`
+		} `json:"data"`
+	}
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/transit/encrypt/api-keys", firstToken,
+		map[string]string{"plaintext": plaintext}, &encrypted))
+	require.NotEmpty(t, encrypted.Data.Ciphertext)
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/secret/data/lifecycle", firstToken,
+		map[string]any{"data": map[string]string{"value": "retained"}}, nil))
+	_, err = runtime.Stop(ctx, &runtimev0.StopRequest{})
+	require.NoError(t, err)
 	_, err = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
 	require.NoError(t, err)
 
 	secondInit, secondToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, nil)
 	require.Len(t, secondInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
 	require.Equal(t, firstToken, secondToken, "local custody must survive runtime replacement")
+	var decrypted struct {
+		Data struct {
+			Plaintext string `json:"plaintext"`
+		} `json:"data"`
+	}
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/transit/decrypt/api-keys", secondToken,
+		map[string]string{"ciphertext": encrypted.Data.Ciphertext}, &decrypted))
+	require.Equal(t, plaintext, decrypted.Data.Plaintext)
+	var stored struct {
+		Data struct {
+			Data map[string]string `json:"data"`
+		} `json:"data"`
+	}
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "GET", "/v1/secret/data/lifecycle", secondToken, nil, &stored))
+	require.Equal(t, "retained", stored.Data.Data["value"])
 }
 
 func initAndStartRuntime(

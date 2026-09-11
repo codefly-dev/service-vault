@@ -73,12 +73,9 @@ func TestLocalVaultRefusesMismatchedCustodyAndStorage(t *testing.T) {
 	}
 }
 
-// Explicit opt-in, isolated random loopback port and owned container/directory.
+// Always exercise the production pin using owned containers and random loopback ports.
 func TestLocalVaultRestartKeepsCiphertext(t *testing.T) {
-	image := os.Getenv("VAULT_PERSISTENCE_IMAGE")
-	if image == "" {
-		t.Skip("set VAULT_PERSISTENCE_IMAGE to the installed pinned runtime image")
-	}
+	runtimeImage := image.FullName()
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	dir := t.TempDir()
@@ -99,7 +96,7 @@ func TestLocalVaultRestartKeepsCiphertext(t *testing.T) {
 		return strings.TrimSpace(string(raw))
 	}
 	start := func() (string, string) {
-		id := docker("run", "-d", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "SKIP_SETCAP=true", "-p", "127.0.0.1::8200", "-v", dir+":/vault/file", image, "vault", "server", "-config=/vault/file/server.json")
+		id := docker("run", "-d", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "SKIP_SETCAP=true", "-p", "127.0.0.1::8200", "-v", dir+":/vault/file", runtimeImage, "vault", "server", "-config=/vault/file/server.json")
 		t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
 		port := docker("port", id, "8200/tcp")
 		return id, "http://" + port
@@ -135,6 +132,35 @@ func TestLocalVaultRestartKeepsCiphertext(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, address = start()
+	custodyPath := filepath.Join(dir, "credentials.json")
+	original, err := os.ReadFile(custodyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, "credentials.backup")
+	if err = os.Rename(custodyPath, backupPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.bootstrap(ctx, address, ""); err == nil {
+		t.Fatal("initialized storage accepted missing custody")
+	}
+	if err = os.Rename(backupPath, custodyPath); err != nil {
+		t.Fatal(err)
+	}
+	custody, err := state.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	custody.UnsealKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	if err = state.save(custody); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.bootstrap(ctx, address, ""); err == nil {
+		t.Fatal("initialized storage accepted mismatched custody")
+	}
+	if err = os.WriteFile(custodyPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
 	recovered, err := state.bootstrap(ctx, address, "")
 	if err != nil {
 		t.Fatal(err)
