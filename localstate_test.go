@@ -89,15 +89,20 @@ func TestLocalVaultRestartKeepsCiphertext(t *testing.T) {
 	}
 	docker := func(args ...string) string {
 		t.Helper()
-		raw, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		// Pull progress goes to stderr on a fresh runner. Only stdout is the
+		// container ID/port; mixing streams makes cold-image qualification fail.
+		var stderr strings.Builder
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd.Stderr = &stderr
+		raw, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("docker %s failed: %v (%s)", args[0], err, strings.TrimSpace(string(raw)))
+			t.Fatalf("docker %s failed: %v (%s)", args[0], err, strings.TrimSpace(stderr.String()))
 		}
 		return strings.TrimSpace(string(raw))
 	}
 	start := func() (string, string) {
 		id := docker("run", "-d", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "SKIP_SETCAP=true", "-p", "127.0.0.1::8200", "-v", dir+":/vault/file", runtimeImage, "vault", "server", "-config=/vault/file/server.json")
-		t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
+		t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", id).Run() })
 		port := docker("port", id, "8200/tcp")
 		return id, "http://" + port
 	}
@@ -125,7 +130,7 @@ func TestLocalVaultRestartKeepsCiphertext(t *testing.T) {
 		t.Fatal("no ciphertext")
 	}
 	docker("stop", id)
-	docker("rm", id)
+	docker("rm", "-v", id)
 	state.close()
 	state, err = openLocalVaultState(dir)
 	if err != nil {

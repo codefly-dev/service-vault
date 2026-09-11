@@ -34,7 +34,7 @@ Qualification:
 ```sh
 GOMAXPROCS=2 go test -p 1 -v ./... -count=1
 # Required on the supported Linux Nix CI runner (absence is a failure):
-VAULT_REQUIRE_NIX=1 go test -v ./... -run '^TestCreateToRunNix$' -count=1
+VAULT_REQUIRE_NIX=1 go test -race -v ./... -count=1
 ```
 
 The mandatory persistence test uses the agent's exact image digest, an owned
@@ -49,7 +49,8 @@ credentials.
 Both full agent lifecycles (Docker and Nix) exercise Stop/Destroy and replacement,
 original ciphertext decryption, KV v2 retention, configured-token creation, and
 saved-token reuse. Their Codefly homes are test-owned temporary directories.
-The dedicated Linux Nix CI job requires Nix and cannot skip qualification.
+The dedicated Linux Nix CI job runs the full suite with the race detector,
+requires Nix, and cannot skip qualification.
 Local hosts without Nix still report the existing explicit skip; that is not
 Nix qualification evidence.
 

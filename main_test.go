@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,21 @@ func TestVaultImageSBOM(t *testing.T) {
 	require.Equal(t, builderv0.SBOMStatus_COMPLETE, response.GetState().GetState(), "message: %s", response.GetState().GetMessage())
 	require.NotEmpty(t, response.GetBom().GetComponents())
 	require.NotEmpty(t, response.GetSha256())
+	// Verify the actual binary inventory contains the fixes, even if a scanner
+	// database later drops an advisory or stops recognizing a Go dependency.
+	for module, version := range map[string]string{
+		"github.com/apache/thrift": "v0.24.0",
+		"google.golang.org/grpc":   "v1.83.2",
+	} {
+		found := false
+		for _, component := range response.GetBom().GetComponents() {
+			if strings.HasPrefix(component.GetPurl(), "pkg:golang/"+module+"@") {
+				found = true
+				require.Equal(t, version, component.GetVersion(), module)
+			}
+		}
+		require.True(t, found, "runtime SBOM must contain %s", module)
+	}
 }
 
 // TestCreateToRunNix runs the SAME full lifecycle against the nix runtime —
@@ -201,10 +217,12 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.NotEmpty(t, encrypted.Data.Ciphertext)
 	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/secret/data/lifecycle", firstToken,
 		map[string]any{"data": map[string]string{"value": "retained"}}, nil))
-	_, err = runtime.Stop(ctx, &runtimev0.StopRequest{})
+	stopped, err := runtime.Stop(ctx, &runtimev0.StopRequest{})
 	require.NoError(t, err)
-	_, err = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+	require.Equal(t, runtimev0.StopStatus_SUCCESS, stopped.GetStatus().GetState(), stopped.GetStatus().GetMessage())
+	destroyed, err := runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
 	require.NoError(t, err)
+	require.Equal(t, runtimev0.DestroyStatus_SUCCESS, destroyed.GetStatus().GetState(), destroyed.GetStatus().GetMessage())
 
 	secondInit, secondToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, nil)
 	require.Len(t, secondInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
@@ -262,8 +280,9 @@ func initAndStartRuntime(
 
 	// Start drives the post-unseal seeding (transit engine + JWT key) over HTTP,
 	// which only succeeds if vault is up and stayed up.
-	_, err = runtime.Start(ctx, &runtimev0.StartRequest{})
+	started, err := runtime.Start(ctx, &runtimev0.StartRequest{})
 	require.NoError(t, err)
+	require.Equal(t, runtimev0.StartStatus_STARTED, started.GetStatus().GetState(), started.GetStatus().GetMessage())
 
 	// Explicit health assertion: vault answers 200 (initialized, unsealed, active).
 	require.NotEmpty(t, runtime.vaultAddress)
