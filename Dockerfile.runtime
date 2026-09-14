@@ -28,9 +28,10 @@ RUN apk add --no-cache bash git
 COPY --from=ui /src /src
 WORKDIR /src
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go get google.golang.org/grpc@v1.83.1 golang.org/x/crypto@v0.55.0 golang.org/x/text@v0.41.0 \
+    go get google.golang.org/grpc@v1.83.2 github.com/apache/thrift@v0.24.0 golang.org/x/crypto@v0.55.0 golang.org/x/text@v0.41.0 \
     && go mod download \
-    && test "$(go list -m -f '{{.Version}}' google.golang.org/grpc)" = "v1.83.1" \
+    && test "$(go list -m -f '{{.Version}}' google.golang.org/grpc)" = "v1.83.2" \
+    && test "$(go list -m -f '{{.Version}}' github.com/apache/thrift)" = "v0.24.0" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/crypto)" = "v0.55.0" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/text)" = "v0.41.0"
 ARG TARGETARCH
@@ -40,10 +41,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     build_date="$(git show -s --format=%cI HEAD)" \
     && CGO_ENABLED=0 GOARCH="${TARGETARCH}" GOOS="${TARGETOS}" \
        go build -buildvcs=false -tags "vault ui" \
-       -ldflags "-X github.com/hashicorp/vault/version.GitCommit=${VAULT_COMMIT}+codefly.1 -X github.com/hashicorp/vault/version.BuildDate=${build_date} -X github.com/hashicorp/vault/version.Version=${VAULT_VERSION}" \
+       -ldflags "-X github.com/hashicorp/vault/version.GitCommit=${VAULT_COMMIT}+codefly.2 -X github.com/hashicorp/vault/version.BuildDate=${build_date} -X github.com/hashicorp/vault/version.Version=${VAULT_VERSION}" \
        -o bin/vault .
 RUN go version -m bin/vault | grep -F "go1.26.6" \
-    && go version -m bin/vault | grep -F "google.golang.org/grpc" | grep -F "v1.83.1" \
+    && go version -m bin/vault | grep -F "google.golang.org/grpc" | grep -F "v1.83.2" \
+    && go version -m bin/vault | grep -F "github.com/apache/thrift" | grep -F "v0.24.0" \
     && go version -m bin/vault | grep -F "golang.org/x/crypto" | grep -F "v0.55.0" \
     && go version -m bin/vault | grep -F "golang.org/x/text" | grep -F "v0.41.0" \
     && go version -m bin/vault | grep -F "github.com/hashicorp/vault/version.Version=${VAULT_VERSION}"

@@ -13,3 +13,17 @@ concurrency:
 jobs:
   ci:
     uses: codefly-dev/core/.github/workflows/go-service-ci.yml@main
+
+  nix-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
+      - name: Qualify full suite including native process replacement
+        env:
+          VAULT_REQUIRE_NIX: '1'
+        run: go test -race -v ./... -count=1

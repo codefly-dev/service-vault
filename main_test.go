@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,22 +24,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestRuntimeMintsEphemeralVaultTokenWhenConfigurationIsAbsent(t *testing.T) {
-	runtime := NewRuntime()
-	tokens := make([]string, 2)
-	for i := range tokens {
-		token, err := runtime.vaultTokenFromRuntimeConfiguration(context.Background(), nil)
-
-		require.NoError(t, err)
-		decoded, err := base64.RawURLEncoding.DecodeString(token)
-		require.NoError(t, err)
-		require.Len(t, decoded, 32)
-		tokens[i] = token
-	}
-
-	require.NotEqual(t, tokens[0], tokens[1])
-}
-
 // TestCreateToRunDocker runs the full agent lifecycle against the Docker
 // runtime (the default container backend).
 func TestCreateToRunDocker(t *testing.T) {
@@ -47,9 +32,9 @@ func TestCreateToRunDocker(t *testing.T) {
 
 func TestVaultImagePin(t *testing.T) {
 	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime", image.Name)
-	require.Equal(t, "runtime-v2.0.3-patched.8", image.Tag)
-	require.Equal(t, "sha256:0b60cd7b620685d1b772f43a37b2cdcd2afe1376c3119972c43c32092e5b118d", image.Digest)
-	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:0b60cd7b620685d1b772f43a37b2cdcd2afe1376c3119972c43c32092e5b118d", image.FullName())
+	require.Equal(t, "runtime-v2.0.3-patched.9", image.Tag)
+	require.Equal(t, "sha256:5217e3e2d22e2cfbc7e89b68c48bba190d58d3f5e64f941e07b11f04070a94f4", image.Digest)
+	require.Equal(t, "ghcr.io/codefly-dev/service-vault-runtime@sha256:5217e3e2d22e2cfbc7e89b68c48bba190d58d3f5e64f941e07b11f04070a94f4", image.FullName())
 }
 
 // TestAgentVersion asserts the embedded agent identity actually resolves from
@@ -111,19 +96,37 @@ func TestVaultImageSBOM(t *testing.T) {
 	require.Equal(t, builderv0.SBOMStatus_COMPLETE, response.GetState().GetState(), "message: %s", response.GetState().GetMessage())
 	require.NotEmpty(t, response.GetBom().GetComponents())
 	require.NotEmpty(t, response.GetSha256())
+	// Verify the actual binary inventory contains the fixes, even if a scanner
+	// database later drops an advisory or stops recognizing a Go dependency.
+	for module, version := range map[string]string{
+		"github.com/apache/thrift": "v0.24.0",
+		"google.golang.org/grpc":   "v1.83.2",
+	} {
+		found := false
+		for _, component := range response.GetBom().GetComponents() {
+			if strings.HasPrefix(component.GetPurl(), "pkg:golang/"+module+"@") {
+				found = true
+				require.Equal(t, version, component.GetVersion(), module)
+			}
+		}
+		require.True(t, found, "runtime SBOM must contain %s", module)
+	}
 }
 
 // TestCreateToRunNix runs the SAME full lifecycle against the nix runtime —
 // the Docker-free backend used on hosts without Docker. Requires nix.
 //
 // This is the test that exercises `nixVault` end to end: Init materializes the
-// flake, launches `vault server -dev`, and waits for /v1/sys/health; Start then
+// flake, launches a file-backed Vault, and waits for /v1/sys/health; Start then
 // drives the post-unseal transit/JWT seeding over HTTP. A regression where the
 // nix-launched vault starts, unseals, then exits before binding (the failure
 // that surfaced only at `codefly run` time) fails HERE instead of in the field.
 func TestCreateToRunNix(t *testing.T) {
 	if !runners.CheckNixInstalled() || !runners.IsNixSupported() {
-		t.Skip("nix not installed/supported on this host")
+		if os.Getenv("VAULT_REQUIRE_NIX") == "1" {
+			t.Fatal("Nix qualification requires a supported Nix installation")
+		}
+		t.Skip("nix not installed/supported on this host; required on the Nix CI runner")
 	}
 	testCreateToRun(t, resources.NewRuntimeContextNix())
 }
@@ -131,6 +134,8 @@ func TestCreateToRunNix(t *testing.T) {
 // testCreateToRun drives Load → Init → Start → GET /v1/sys/health for one
 // runtime context, so docker and nix exercise the identical agent path.
 func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
+	// Keep all runtime custody and caches owned by this test, including on failure.
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	wool.SetGlobalLogLevel(wool.DEBUG)
 	ctx := context.Background()
 
@@ -199,12 +204,44 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.Len(t, firstInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
 	require.Equal(t, configuredToken, firstToken)
 
-	_, err = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+	// Write through the consumer APIs before stopping. Token equality alone
+	// cannot prove that encryption keys or KV contents were retained.
+	plaintext := base64.StdEncoding.EncodeToString([]byte("owned-lifecycle-fixture"))
+	var encrypted struct {
+		Data struct {
+			Ciphertext string `json:"ciphertext"`
+		} `json:"data"`
+	}
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/transit/encrypt/api-keys", firstToken,
+		map[string]string{"plaintext": plaintext}, &encrypted))
+	require.NotEmpty(t, encrypted.Data.Ciphertext)
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/secret/data/lifecycle", firstToken,
+		map[string]any{"data": map[string]string{"value": "retained"}}, nil))
+	stopped, err := runtime.Stop(ctx, &runtimev0.StopRequest{})
 	require.NoError(t, err)
+	require.Equal(t, runtimev0.StopStatus_SUCCESS, stopped.GetStatus().GetState(), stopped.GetStatus().GetMessage())
+	destroyed, err := runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+	require.NoError(t, err)
+	require.Equal(t, runtimev0.DestroyStatus_SUCCESS, destroyed.GetStatus().GetState(), destroyed.GetStatus().GetMessage())
 
 	secondInit, secondToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, nil)
 	require.Len(t, secondInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
-	require.NotEqual(t, firstToken, secondToken)
+	require.Equal(t, firstToken, secondToken, "local custody must survive runtime replacement")
+	var decrypted struct {
+		Data struct {
+			Plaintext string `json:"plaintext"`
+		} `json:"data"`
+	}
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/transit/decrypt/api-keys", secondToken,
+		map[string]string{"ciphertext": encrypted.Data.Ciphertext}, &decrypted))
+	require.Equal(t, plaintext, decrypted.Data.Plaintext)
+	var stored struct {
+		Data struct {
+			Data map[string]string `json:"data"`
+		} `json:"data"`
+	}
+	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "GET", "/v1/secret/data/lifecycle", secondToken, nil, &stored))
+	require.Equal(t, "retained", stored.Data.Data["value"])
 }
 
 func initAndStartRuntime(
@@ -243,8 +280,9 @@ func initAndStartRuntime(
 
 	// Start drives the post-unseal seeding (transit engine + JWT key) over HTTP,
 	// which only succeeds if vault is up and stayed up.
-	_, err = runtime.Start(ctx, &runtimev0.StartRequest{})
+	started, err := runtime.Start(ctx, &runtimev0.StartRequest{})
 	require.NoError(t, err)
+	require.Equal(t, runtimev0.StartStatus_STARTED, started.GetStatus().GetState(), started.GetStatus().GetMessage())
 
 	// Explicit health assertion: vault answers 200 (initialized, unsealed, active).
 	require.NotEmpty(t, runtime.vaultAddress)

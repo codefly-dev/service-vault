@@ -12,7 +12,7 @@
     in
     {
       # devShell exposes the vault server/CLI so the codefly NixEnvironment runs
-      # `vault server -dev` via the materialized devShell. HashiCorp Vault is BUSL
+      # `vault server -config=…` via the materialized devShell. HashiCorp Vault is BUSL
       # (unfree), so nixpkgs is instantiated with allowUnfree — done in-flake (pure;
       # no --impure / global config needed).
       devShells = forAllSystems (system:
