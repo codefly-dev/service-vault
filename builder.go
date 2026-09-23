@@ -29,6 +29,10 @@ type Builder struct {
 // template on 8200.
 type deploymentTemplateParameters struct {
 	ServicePort uint32
+	// ProvisionCommand is the vault container's postStart exec command, as a
+	// JSON array (a valid YAML flow sequence): provision/transit.sh run with the
+	// configured transit key name as its one argument. Empty renders no hook.
+	ProvisionCommand string
 }
 
 func NewBuilder() *Builder {
@@ -118,7 +122,11 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	ctx = s.Wool.Inject(ctx)
 	s.SetDockerImage(image)
 
-	parameters := &deploymentTemplateParameters{}
+	provisionCommand, err := s.transitProvisionCommand()
+	if err != nil {
+		return s.Builder.DeployError(err)
+	}
+	parameters := &deploymentTemplateParameters{ProvisionCommand: provisionCommand}
 	var restrictedConfiguration *basev0.Configuration
 	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,

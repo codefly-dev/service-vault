@@ -85,6 +85,20 @@ spec:
 {{- end }}
             - name: SKIP_SETCAP
               value: "true"
+{{- if .Deployment.Parameters.ProvisionCommand }}
+          # Consumers encrypt and HMAC through transit/ (the configured key), and
+          # `vault server -dev` starts with no transit engine. The hook
+          # provisions it idempotently over loopback (provision/transit.sh),
+          # authenticating with the root token this container was started with.
+          # It runs on every container start because the dev store is in-memory:
+          # a restart loses everything a one-shot Job would have written. The
+          # container does not reach Running until the hook succeeds, and a
+          # failed hook restarts the container.
+          lifecycle:
+            postStart:
+              exec:
+                command: {{ .Deployment.Parameters.ProvisionCommand }}
+{{- end }}
           # Modest dev-mode footprint. Production Raft mode wants
           # ~512Mi RAM minimum; bump in overlay.
           resources:
