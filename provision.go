@@ -14,13 +14,31 @@ import (
 // default.
 const defaultTransitKey = "api-keys"
 
-// transitProvisionScript provisions, in a deployed Vault, the transit state the
-// local runtime seeds in Runtime.enableTransit: the transit engine at transit/
-// and the configured key. The deployment renders it as the vault container's
-// postStart hook, so it runs against every start of the in-memory dev server.
+// provisionMode selects how provision/provision.sh treats the server it runs
+// against: the in-memory dev server of the ephemeral local-apply render, or the
+// durable, auto-unsealed raft server of a restricted (deployed) render.
+type provisionMode string
+
+const (
+	provisionModeDev     provisionMode = "dev"
+	provisionModeDurable provisionMode = "durable"
+)
+
+// provisionScript provisions, in a deployed Vault, the state the local runtime
+// seeds (Runtime.enableTransit and localVaultState.bootstrap): in durable mode
+// initialization, the composition-supplied access token and KV v2 at secret/;
+// in both modes the transit engine at transit/ and the configured key. The
+// deployment renders it as the vault container's postStart hook, so it runs on
+// every start of the Vault process.
 //
-//go:embed provision/transit.sh
-var transitProvisionScript string
+//go:embed provision/provision.sh
+var provisionScript string
+
+// serverScript starts the durable server of a restricted render: raft storage
+// on the pod's persistent volume, auto-unsealed by the environment's seal.
+//
+//go:embed provision/server.sh
+var serverScript string
 
 // transitKeyNamePattern bounds the key name to one plain Vault path segment. It
 // reaches the hook as an argv entry, never through a shell expansion, but a
@@ -39,20 +57,28 @@ func (s *Service) transitKeyName() (string, error) {
 	return key, nil
 }
 
-// transitProvisionCommand renders the postStart exec command as a JSON array.
-// The script is passed to `sh -c` and the key name as its positional $1, so the
-// configured value is data to the script, not script text.
-func (s *Service) transitProvisionCommand() (string, error) {
-	key, err := s.transitKeyName()
-	if err != nil {
-		return "", err
-	}
-	// A JSON array is a YAML flow sequence. HTML escaping stays off so the
-	// rendered script reads as written (`2>&1`, not `2\u003e\u00261`).
+// provisionCommand renders the postStart exec command as a JSON array. The
+// script is passed to `sh -c` and the mode and key name as its positional $1
+// and $2, so the configured value is data to the script, not script text.
+func provisionCommand(mode provisionMode, key string) (string, error) {
+	return execCommand("/bin/sh", "-c", provisionScript, "vault-provision", string(mode), key)
+}
+
+// serverCommand renders the durable container's command. dumb-init stays PID 1,
+// as under the image's own entrypoint, so signals reach vault and zombies are
+// reaped.
+func serverCommand() (string, error) {
+	return execCommand("/usr/bin/dumb-init", "--", "/bin/sh", "-c", serverScript, "vault-server")
+}
+
+// execCommand renders an exec argv as a JSON array, which is a valid YAML flow
+// sequence. HTML escaping stays off so a rendered script reads as written
+// (`2>&1`, not `2>&1`).
+func execCommand(argv ...string) (string, error) {
 	var command bytes.Buffer
 	encoder := json.NewEncoder(&command)
 	encoder.SetEscapeHTML(false)
-	if err = encoder.Encode([]string{"/bin/sh", "-c", transitProvisionScript, "vault-provision", key}); err != nil {
+	if err := encoder.Encode(argv); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(command.String()), nil

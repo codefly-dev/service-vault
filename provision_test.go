@@ -28,9 +28,17 @@ var restrictedVaultTokenReference = map[string]*builderv0.KubernetesSecretKeyRef
 	},
 }
 
-type renderedContainer struct {
+type renderedVolumeMount struct {
 	Name      string `yaml:"name"`
-	Lifecycle struct {
+	MountPath string `yaml:"mountPath"`
+}
+
+type renderedContainer struct {
+	Name         string                `yaml:"name"`
+	Command      []string              `yaml:"command"`
+	Args         []string              `yaml:"args"`
+	VolumeMounts []renderedVolumeMount `yaml:"volumeMounts"`
+	Lifecycle    struct {
 		PostStart struct {
 			Exec struct {
 				Command []string `yaml:"command"`
@@ -51,6 +59,22 @@ type renderedContainer struct {
 
 type renderedStatefulSet struct {
 	Spec struct {
+		PersistentVolumeClaimRetentionPolicy struct {
+			WhenDeleted string `yaml:"whenDeleted"`
+			WhenScaled  string `yaml:"whenScaled"`
+		} `yaml:"persistentVolumeClaimRetentionPolicy"`
+		VolumeClaimTemplates []struct {
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Spec struct {
+				AccessModes      []string `yaml:"accessModes"`
+				StorageClassName string   `yaml:"storageClassName"`
+				Resources        struct {
+					Requests map[string]string `yaml:"requests"`
+				} `yaml:"resources"`
+			} `yaml:"spec"`
+		} `yaml:"volumeClaimTemplates"`
 		Template struct {
 			Spec struct {
 				Containers []renderedContainer `yaml:"containers"`
@@ -59,14 +83,37 @@ type renderedStatefulSet struct {
 	} `yaml:"spec"`
 }
 
-func renderedVaultContainer(t *testing.T, destination string) renderedContainer {
+func renderedVaultStatefulSet(t *testing.T, destination string) renderedStatefulSet {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join(destination, "base", "stateful-set.yaml"))
 	require.NoError(t, err)
 	var statefulSet renderedStatefulSet
 	require.NoError(t, yaml.Unmarshal(content, &statefulSet))
+	return statefulSet
+}
+
+func renderedVaultContainer(t *testing.T, destination string) renderedContainer {
+	t.Helper()
+	statefulSet := renderedVaultStatefulSet(t, destination)
 	require.Len(t, statefulSet.Spec.Template.Spec.Containers, 1)
 	return statefulSet.Spec.Template.Spec.Containers[0]
+}
+
+// deployEphemeral renders the local-apply profile, the one that still runs the
+// in-memory dev server.
+func deployEphemeral(t *testing.T) (*builderv0.DeploymentResponse, string) {
+	t.Helper()
+	builder, networkMappings := deploymentBuilder(t)
+	destination := t.TempDir()
+	response, err := builder.Deploy(context.Background(), deploymentRequest(
+		destination,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		networkMappings,
+		vaultConfiguration("must-stay-ephemeral"),
+		nil,
+	))
+	require.NoError(t, err)
+	return response, destination
 }
 
 // deployRestricted renders the restricted (GitOps) profile and returns the
@@ -87,10 +134,11 @@ func deployRestricted(t *testing.T, transitKey string) (*builderv0.DeploymentRes
 	return response, destination
 }
 
-// The restricted render is what a deployed cell runs. Its Vault must come up
-// with the transit engine and the configured key, or every consumer's
-// /v1/transit/encrypt|hmac/<key> answers 404.
-func TestRestrictedRenderProvisionsTransitOnVaultStart(t *testing.T) {
+// The restricted render is what a deployed cell runs. It must be a durable
+// Vault — state on a persistent volume, unsealed by the environment's seal — and
+// its start hook must provision transit with the configured key, or every
+// consumer's /v1/transit/encrypt|hmac/<key> answers 404.
+func TestRestrictedRenderRunsADurableVault(t *testing.T) {
 	for _, test := range []struct {
 		setting string
 		want    string
@@ -106,36 +154,65 @@ func TestRestrictedRenderProvisionsTransitOnVaultStart(t *testing.T) {
 			require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
 			require.True(t, output.GetValidation().GetRestricted())
 
+			statefulSet := renderedVaultStatefulSet(t, destination)
 			container := renderedVaultContainer(t, destination)
 			require.Equal(t, "vault", container.Name)
 			require.Equal(t,
-				[]string{"/bin/sh", "-c", transitProvisionScript, "vault-provision", test.want},
+				[]string{"/usr/bin/dumb-init", "--", "/bin/sh", "-c", serverScript, "vault-server"},
+				container.Command, "the durable server script is the container's command")
+			require.Empty(t, container.Args, "no `server -dev` arguments")
+			require.Equal(t,
+				[]string{"/bin/sh", "-c", provisionScript, "vault-provision", "durable", test.want},
 				container.Lifecycle.PostStart.Exec.Command,
-				"the hook runs the embedded script verbatim with the key name as $1")
+				"the hook runs the embedded script verbatim, durable mode, key name as $2")
 
-			// The hook authenticates with the token the container already
-			// holds, projected from the one secret reference the composition
-			// supplies — no new secret, no literal value in the tree.
+			// Storage: one claim, mounted where raft and the init record live,
+			// on the environment's default StorageClass, retained when the
+			// StatefulSet is deleted or scaled.
+			require.Len(t, statefulSet.Spec.VolumeClaimTemplates, 1)
+			claim := statefulSet.Spec.VolumeClaimTemplates[0]
+			require.Equal(t, "data", claim.Metadata.Name)
+			require.Equal(t, []string{"ReadWriteOnce"}, claim.Spec.AccessModes)
+			require.Equal(t, "1Gi", claim.Spec.Resources.Requests["storage"])
+			require.Empty(t, claim.Spec.StorageClassName, "the StorageClass is the environment's choice")
+			require.Equal(t, "Retain", statefulSet.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted)
+			require.Equal(t, "Retain", statefulSet.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled)
+			require.Contains(t, container.VolumeMounts, renderedVolumeMount{Name: "data", MountPath: "/vault/data"})
+
+			// Credentials: the access token comes only from the canonical
+			// secret reference; the container declares its service so the
+			// environment's configuration (the seal) is projected into it.
+			env := map[string]string{}
 			var token []string
-			for _, env := range container.Env {
-				if env.Name == vaultTokenEnvironmentVariable {
-					require.Empty(t, env.Value)
-					require.NotNil(t, env.ValueFrom)
-					token = append(token, env.ValueFrom.SecretKeyRef.Name+"/"+env.ValueFrom.SecretKeyRef.Key)
+			for _, variable := range container.Env {
+				env[variable.Name] = variable.Value
+				if variable.ValueFrom != nil {
+					token = append(token, variable.Name+"="+variable.ValueFrom.SecretKeyRef.Name+"/"+variable.ValueFrom.SecretKeyRef.Key)
 				}
 			}
-			require.Equal(t, []string{"vault-credentials/CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN"}, token)
-			require.Contains(t, transitProvisionScript, `VAULT_TOKEN="$VAULT_DEV_ROOT_TOKEN_ID"`)
+			require.Equal(t, []string{"VAULT_ACCESS_TOKEN=vault-credentials/CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN"}, token)
+			require.Equal(t, "vault", env["CODEFLY__SERVICE"])
+			require.NotContains(t, env, vaultTokenEnvironmentVariable, "a durable server has no dev root token")
 
 			tree := readManifestTree(t, destination)
-			require.NotContains(t, tree, "kind: Job", "provisioning follows the in-memory Vault process, not the rollout")
+			require.NotContains(t, tree, "- -dev", "no dev-mode server argument in a deployed render")
+			// The seal is environment configuration: the render sets no seal
+			// variable and the server configuration it writes has no seal stanza.
+			for name := range env {
+				require.NotRegexp(t, `^(VAULT_SEAL_TYPE|VAULT_GCPCKMS_|GOOGLE_|VAULT_RECOVERY_PGP_KEY)`, name)
+			}
+			require.NotContains(t, serverScript, "seal \"")
+			require.NotContains(t, tree, "kind: Job")
 			require.NotContains(t, tree, "kind: Namespace")
 			require.NotContains(t, tree, "kind: Secret")
+			require.Equal(t, "vault-credentials", output.GetBundle().GetSecretReferences()[vaultAccessTokenEnvironmentVariable].GetName())
 		})
 	}
 }
 
-// Local apply renders the same in-memory dev server, so it provisions the same way.
+// Local apply keeps the in-memory dev server and re-provisions it on every start.
+// A restart there mints a new transit key; that is acceptable only for this
+// disposable local profile, which is why no deployed profile renders it.
 func TestEphemeralRenderProvisionsTransitOnVaultStart(t *testing.T) {
 	builder, networkMappings := deploymentBuilder(t)
 	destination := t.TempDir()
@@ -150,7 +227,7 @@ func TestEphemeralRenderProvisionsTransitOnVaultStart(t *testing.T) {
 	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	container := renderedVaultContainer(t, destination)
 	require.Equal(t,
-		[]string{"/bin/sh", "-c", transitProvisionScript, "vault-provision", "api-keys"},
+		[]string{"/bin/sh", "-c", provisionScript, "vault-provision", "dev", "api-keys"},
 		container.Lifecycle.PostStart.Exec.Command)
 	statefulSet, err := os.ReadFile(filepath.Join(destination, "base", "stateful-set.yaml"))
 	require.NoError(t, err)
@@ -170,7 +247,8 @@ func TestDeployRefusesAnInvalidTransitKeyName(t *testing.T) {
 }
 
 // fakeVault is a `vault` CLI double for exercising the provisioning script's
-// control flow. It models only the five invocations the script makes, keeps
+// dev-mode control flow (durable mode runs against the real image in
+// durable_test.go). It models only the five invocations dev mode makes, keeps
 // Vault's state as files, and appends every call to a log.
 const fakeVault = `#!/bin/sh
 state="$FAKE_VAULT_STATE"
@@ -214,10 +292,11 @@ func (run *provisionRun) mark(t *testing.T, name, content string) {
 	require.NoError(t, os.WriteFile(filepath.Join(run.state, name), []byte(content), 0o644))
 }
 
-// exec runs the script exactly as the hook does: `sh -c <script> <$0> <key>`.
+// exec runs the script exactly as the dev-mode hook does:
+// `sh -c <script> <$0> dev <key>`.
 func (run *provisionRun) exec(t *testing.T, token string, args ...string) (int, string) {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", append([]string{"-c", transitProvisionScript, "vault-provision"}, args...)...)
+	cmd := exec.Command("/bin/sh", append([]string{"-c", provisionScript, "vault-provision", "dev"}, args...)...)
 	cmd.Env = []string{
 		"PATH=" + run.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"FAKE_VAULT_STATE=" + run.state,
@@ -327,7 +406,7 @@ func TestTransitProvisionScriptFailsClosed(t *testing.T) {
 		run := newProvisionRun(t)
 		code, out := run.exec(t, "root-token")
 		require.Equal(t, 64, code)
-		require.Contains(t, out, "transit key name is required")
+		require.Contains(t, out, "usage: provision.sh <dev|durable> <transit-key-name>")
 		require.Empty(t, run.calls(t))
 	})
 }
@@ -337,7 +416,7 @@ func TestTransitProvisionScriptFailsClosed(t *testing.T) {
 // in VAULT_DEV_ROOT_TOKEN_ID — then executes the rendered postStart command
 // inside it, twice, and calls transit the way a consumer does.
 func TestRenderedHookProvisionsThePinnedVault(t *testing.T) {
-	response, destination := deployRestricted(t, "")
+	response, destination := deployEphemeral(t)
 	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	hook := renderedVaultContainer(t, destination).Lifecycle.PostStart.Exec.Command
 	require.NotEmpty(t, hook)

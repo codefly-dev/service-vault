@@ -9,5 +9,40 @@ This service manages a HashiCorp Vault instance:
 
 | Key | Description |
 |-----|-------------|
-| `vault/address` | Vault HTTP address |
-| `vault/token` | Root token for authentication |
+| `vault/address` | Vault HTTP(S) address |
+| `vault/token` | Token for authentication (absent when `vault/token-file` is set) |
+| `vault/ca-file` | External instances only: path, in consumer pods, of the CA bundle that verifies `vault/address` |
+| `vault/token-file` | External instances only: path, in consumer pods, of a file holding a current Vault token |
+
+## Which Vault a deployment gets
+
+| Where | Vault |
+|-------|-------|
+| `codefly run` (Docker or Nix) | A local, file-backed server whose state survives restarts (unchanged) |
+| Ephemeral local apply | `vault server -dev`, in memory. A restart mints a new transit key, so everything encrypted before it is unreadable. Local only. |
+| Restricted (deployed) render, environment not bound | A durable server: integrated raft storage on a persistent volume, auto-unsealed by the environment's seal |
+| Any deployment, environment bound in `external-instances` | None. Consumers use the external Vault |
+
+### External instances
+
+Bind a deployment environment to a Vault operated outside this service:
+
+```yaml
+transit-key: api-keys
+external-instances:
+  production:
+    address: https://vault.example.internal:8200
+    ca-file: /var/run/vault/ca.crt
+    token-file: /var/run/vault/token
+```
+
+Once any environment is bound, every environment this service deploys to must be. A missing or misspelled name fails the deployment instead of falling back to a Vault of its own. The address must be HTTPS. `ca-file` and `token-file` are absolute paths inside the consumers' pods. The environment projects those files, and this service never carries their contents. Something in each consumer's pod must keep `token-file` valid, for example a Vault Agent sidecar using Kubernetes auto-auth with a file sink. That runs in the consumer's pod, which this service does not render. Without `token-file`, consumers present the `vault/token` secret. The operator of the external Vault owns everything consumers need there: the transit engine and key, KV v2 at `secret/`, the policies, and the authentication.
+
+### Durable deployed Vault
+
+The environment supplies, as this service's non-secret configuration:
+
+- `VAULT_SEAL_TYPE` and that seal's own variables. For GCP Cloud KMS: `VAULT_SEAL_TYPE=gcpckms`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `VAULT_GCPCKMS_SEAL_KEY_RING`, `VAULT_GCPCKMS_SEAL_CRYPTO_KEY`. Credentials come from the pod's workload identity. The server refuses to start without an auto-unseal seal.
+- Optionally `VAULT_RECOVERY_PGP_KEY`, a base64 OpenPGP public key. The recovery key is then written only in encrypted form.
+
+The container's postStart hook initializes the server once, installs the `vault/token` secret as an orphan root-policy token, and mounts KV v2 at `secret/` and transit with `transit-key`. It then revokes the initial root token. The recovery key stays in `/vault/data/bootstrap/init.json` on the data volume. Every step is idempotent, and an existing transit key is never rotated. This service does not seed any secret a consumer reads. Rotating the access token is an operator step: create the new token with the current one before the secret changes.

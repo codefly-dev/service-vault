@@ -21,18 +21,36 @@ type Builder struct {
 	*Service
 }
 
-// deploymentTemplateParameters carries what the Service manifest cannot know on
-// its own: the in-cluster port core allocated to vault's http endpoint. Every
-// consumer is handed that port in its network mapping, so the Service has to
-// publish it and fold it onto 8200, the port the container listens on
-// (`-dev-listen-address` and every probe are pinned to it). Zero leaves the
-// template on 8200.
+// deploymentTemplateParameters carries what the manifests cannot know on their
+// own. Exactly one of three shapes renders:
+//
+//   - External: an environment bound to a Vault this service does not run
+//     (Settings.ExternalInstances). Nothing is rendered; consumers receive the
+//     external coordinates.
+//   - Durable: a restricted (deployed) render. Vault runs as a raft-backed,
+//     auto-unsealed server on a persistent volume (provision/server.sh) and
+//     provision/provision.sh initializes and provisions it.
+//   - Otherwise the ephemeral local-apply render: the in-memory dev server,
+//     re-provisioned on every start.
 type deploymentTemplateParameters struct {
+	// ServicePort is the in-cluster port core allocated to vault's http
+	// endpoint. Every consumer is handed that port in its network mapping, so
+	// the Service publishes it and folds it onto 8200, the port the container
+	// listens on. Zero leaves the template on 8200.
 	ServicePort uint32
 	// ProvisionCommand is the vault container's postStart exec command, as a
-	// JSON array (a valid YAML flow sequence): provision/transit.sh run with the
-	// configured transit key name as its one argument. Empty renders no hook.
+	// JSON array (a valid YAML flow sequence): provision/provision.sh run with
+	// its mode and the configured transit key name. Empty renders no hook.
 	ProvisionCommand string
+	// ServerCommand is the durable container's command (provision/server.sh),
+	// as a JSON array. Set only for a durable render.
+	ServerCommand string
+	// ServiceName is the service's own name, declared on the durable container
+	// as CODEFLY__SERVICE so the environment's per-service configuration (the
+	// seal) is projected into it.
+	ServiceName string
+	Durable     bool
+	External    bool
 }
 
 func NewBuilder() *Builder {
@@ -108,38 +126,51 @@ func (s *Builder) Upgrade(ctx context.Context, req *builderv0.UpgradeRequest) (*
 	return s.Builder.UpgradeResponse(res.Changes, res.LockfileDiff)
 }
 
-// Deploy emits a Kustomize-rendered StatefulSet + Service for vault.
-// Mirrors the redis/s3 shape: pull the network instance, build the
-// connection configuration, hand it to the EnvironmentVariables
-// manager, then KustomizeDeploy with templates/deployment/.
-//
-// Note on the dev-mode caveat: the templates run `vault server -dev`
-// which is in-memory and single-unsealed. That's intentionally a
-// dev/staging shape — saas-starter's prod path should swap this
-// overlay for a real Vault setup or AWS Secrets Manager.
+// Deploy renders vault for Kubernetes. Which Vault it renders — none (an
+// external binding), a durable server (restricted profiles), or the in-memory
+// dev server (ephemeral local apply) — is described on
+// deploymentTemplateParameters.
 func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 	s.SetDockerImage(image)
 
-	provisionCommand, err := s.transitProvisionCommand()
+	binding, err := s.externalInstance(req.GetEnvironment().GetName())
 	if err != nil {
 		return s.Builder.DeployError(err)
 	}
-	parameters := &deploymentTemplateParameters{ProvisionCommand: provisionCommand}
-	var restrictedConfiguration *basev0.Configuration
+	restricted := services.IsRestrictedOutputProfile(req.GetDeployment().GetKubernetes().GetProfile())
+	parameters := &deploymentTemplateParameters{ServiceName: s.Identity.Name}
+	switch {
+	case binding != nil:
+		parameters.External = true
+	case restricted:
+		parameters.Durable = true
+		if parameters.ServerCommand, err = serverCommand(); err != nil {
+			return s.Builder.DeployError(err)
+		}
+	}
+	if !parameters.External {
+		key, err := s.transitKeyName()
+		if err != nil {
+			return s.Builder.DeployError(err)
+		}
+		mode := provisionModeDev
+		if parameters.Durable {
+			mode = provisionModeDurable
+		}
+		if parameters.ProvisionCommand, err = provisionCommand(mode, key); err != nil {
+			return s.Builder.DeployError(err)
+		}
+	}
+
+	var configuration *basev0.Configuration
 	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
 		Parameters:           parameters,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
-			if services.IsRestrictedOutputProfile(deployment.Profile) {
-				references, err := vaultRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences())
-				if err != nil {
-					return err
-				}
-				deployment.Kubernetes.SecretReferences = references
-			}
+			restricted := services.IsRestrictedOutputProfile(deployment.Profile)
 			// Vault's HTTP endpoint is visibility: module, so every deploy profile
 			// receives a container-only mapping (a non-DNS internal endpoint has no
 			// public instance) and its consumers reach it in-cluster. Resolve the
@@ -150,11 +181,21 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 			if err != nil {
 				return err
 			}
+			if binding != nil {
+				return s.prepareExternal(ctx, deployment, req, instance, binding, restricted, &configuration)
+			}
+			if restricted {
+				references, err := vaultRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences())
+				if err != nil {
+					return err
+				}
+				deployment.Kubernetes.SecretReferences = references
+			}
 			// The Service publishes the port core allocated to the endpoint — the
 			// one every consumer dials — and targets 8200. Same mechanism as
 			// redis: the mapping the CLI hands this Deploy carries our own endpoint.
 			parameters.ServicePort = instance.GetPort()
-			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1 {
+			if !restricted {
 				vaultToken, err := s.VaultTokenFromConfiguration(ctx, req.GetConfiguration())
 				if err != nil {
 					return err
@@ -164,17 +205,54 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 			// Restricted profiles hand the connection off through the response
 			// (not ExportConfiguration) so the empty token capability reaches the
 			// promotion driver without being injected into the rendered manifests.
-			restrictedConfiguration = s.CreateRestrictedConnectionConfiguration(instance)
+			configuration = s.CreateRestrictedConnectionConfiguration(instance)
 			return nil
 		},
 	})
-	if err != nil ||
-		response.GetState().GetState() != builderv0.DeploymentStatus_SUCCESS ||
-		restrictedConfiguration == nil {
+	if err != nil || response.GetState().GetState() != builderv0.DeploymentStatus_SUCCESS || configuration == nil {
 		return response, err
 	}
-	response.Configuration = restrictedConfiguration
+	response.Configuration = configuration
 	return response, nil
+}
+
+// prepareExternal completes a deployment bound to an external Vault. Nothing is
+// rendered, so the token reference a restricted request carries is consumed by
+// no manifest here; it is still validated when consumers depend on it (no
+// token file), and dropped from this service's bundle either way.
+func (s *Builder) prepareExternal(
+	ctx context.Context,
+	deployment *services.KustomizeDeploymentContext,
+	req *builderv0.DeploymentRequest,
+	instance *basev0.NetworkInstance,
+	binding *ExternalInstance,
+	restricted bool,
+	configuration **basev0.Configuration,
+) error {
+	if restricted {
+		references := deployment.Kubernetes.GetSecretReferences()
+		if binding.TokenFile == "" || len(references) > 0 {
+			if _, err := vaultRestrictedSecretReferences(references); err != nil {
+				return fmt.Errorf("external instance without token-file: %w", err)
+			}
+		}
+		deployment.Kubernetes.SecretReferences = nil
+		// The empty token capability, when present, is filled by the promotion
+		// driver from the external secret, exactly as for a rendered Vault.
+		empty := ""
+		*configuration = s.externalConnectionConfiguration(instance, binding, &empty)
+		return nil
+	}
+	var token *string
+	if binding.TokenFile == "" {
+		value, err := s.VaultTokenFromConfiguration(ctx, req.GetConfiguration())
+		if err != nil {
+			return err
+		}
+		token = &value
+	}
+	*configuration = s.externalConnectionConfiguration(instance, binding, token)
+	return nil
 }
 
 // vaultRestrictedSecretReferences validates the caller-supplied external-secret
@@ -201,7 +279,7 @@ func vaultRestrictedSecretReferences(
 		return nil, fmt.Errorf("restricted Vault token secret reference must not be optional")
 	}
 	return map[string]*builderv0.KubernetesSecretKeyReference{
-		vaultTokenEnvironmentVariable: reference,
+		vaultAccessTokenEnvironmentVariable: reference,
 	}, nil
 }
 

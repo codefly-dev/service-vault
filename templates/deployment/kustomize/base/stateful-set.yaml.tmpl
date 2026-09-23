@@ -1,3 +1,16 @@
+{{- if not .Deployment.Parameters.External }}
+{{- /*
+  Two shapes render here (deploymentTemplateParameters in builder.go):
+
+  - Durable (restricted profiles, i.e. every deployed cell): `vault server`
+    with integrated raft storage on a PersistentVolumeClaim, auto-unsealed by
+    the seal the environment supplies (provision/server.sh). State — the
+    transit keys every ciphertext and API-key HMAC depends on, and KV data —
+    survives restarts, reschedules and rollouts.
+  - Dev (the ephemeral local-apply profile): `vault server -dev`, in-memory,
+    re-provisioned on every start. Never a deployed shape: a restart loses
+    every key it held.
+*/}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -5,21 +18,27 @@ metadata:
   namespace: {{.Namespace}}
 spec:
   serviceName: {{.Name}}
+  # One raft node. Scaling out needs retry_join and TLS between the peers;
+  # nothing else in this render supports more than one replica.
   replicas: 1
   selector:
     matchLabels:
       app: {{.Name}}
+{{- if .Deployment.Parameters.Durable }}
+  # Deleting or scaling the StatefulSet never deletes the data volume: it
+  # holds the only copy of the transit keys.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+{{- end }}
   template:
     metadata:
       labels:
         app: {{.Name}}
     spec:
       automountServiceAccountToken: false
-      # uid 100 = `vault` user in the official hashicorp/vault image.
-      # Without runAsNonRoot enforcement the image still runs as
-      # root unless explicitly set — making it explicit + setting
-      # fsGroup means any future PV mounts (when we leave dev mode)
-      # are writable by the vault user.
+      # uid 100 = `vault` user in the image. fsGroup makes the data volume
+      # writable by it.
       securityContext:
         runAsNonRoot: true
         runAsUser: 100
@@ -31,40 +50,43 @@ spec:
       containers:
         - name: vault
           # Supplied by main.go's image declaration, including its digest.
-          # `vault server -dev` matches local-mode
-          # behavior — fine for dev/staging, NOT a production
-          # configuration (in-memory storage, single unsealed node,
-          # root-token-as-API-key). Production EKS deploys should
-          # swap this overlay for a real Vault setup (Raft storage,
-          # unseal via AWS KMS, etc.) or replace with AWS Secrets
-          # Manager via an externalName service.
           image: {{ .Image }}
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 100
+            # mlock stays disabled (disable_mlock with raft, as HashiCorp
+            # recommends for integrated storage; dev mode never mlocks), so
+            # IPC_LOCK is not needed and every capability is dropped.
             capabilities:
               drop:
                 - ALL
-              # Real (non-dev) Vault wants IPC_LOCK to mlock
-              # unseal keys — re-add it under capabilities.add
-              # in the prod overlay alongside dropping SKIP_SETCAP.
-              # Dev mode disables mlock so we can keep ALL dropped.
             readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
-          # SKIP_SETCAP avoids the IPC_LOCK capability requirement
-          # in pod sandboxes that don't grant it. -dev mode requires
-          # disabled mlock anyway, so this is consistent.
+{{- if .Deployment.Parameters.Durable }}
+          command: {{ .Deployment.Parameters.ServerCommand }}
+{{- else }}
+          # SKIP_SETCAP avoids the IPC_LOCK capability requirement in pod
+          # sandboxes that don't grant it; -dev disables mlock anyway.
           args:
             - server
             - -dev
             - -dev-listen-address=0.0.0.0:8200
+{{- end }}
           ports:
             - name: http
               containerPort: 8200
           env:
+{{- if .Deployment.Parameters.Durable }}
+            # Opts this container into the environment's per-service
+            # configuration: the seal (VAULT_SEAL_TYPE and that seal's own
+            # variables) and, optionally, VAULT_RECOVERY_PGP_KEY arrive here as
+            # environment variables. None of it is part of this render.
+            - name: CODEFLY__SERVICE
+              value: {{ .Deployment.Parameters.ServiceName | printf "%q" }}
+{{- end }}
 {{- if not .Restricted }}
 {{- range $secretKey, $_ := .SecretMap }}
             - name: VAULT_DEV_ROOT_TOKEN_ID
@@ -83,39 +105,58 @@ spec:
                   optional: {{ $reference.Optional }}
 {{- end }}
 {{- end }}
+{{- if not .Deployment.Parameters.Durable }}
             - name: SKIP_SETCAP
               value: "true"
+{{- end }}
 {{- if .Deployment.Parameters.ProvisionCommand }}
+{{- if .Deployment.Parameters.Durable }}
+          # Initializes the server once, installs the composition-supplied
+          # access token, and makes sure KV v2 at secret/ and the transit
+          # engine and key exist (provision/provision.sh, durable mode). It
+          # runs on every start and is idempotent: existing state, above all an
+          # existing transit key, is never rewritten. The container does not
+          # reach Running until it succeeds; a failed hook restarts the
+          # container.
+{{- else }}
           # Consumers encrypt and HMAC through transit/ (the configured key), and
           # `vault server -dev` starts with no transit engine. The hook
-          # provisions it idempotently over loopback (provision/transit.sh),
-          # authenticating with the root token this container was started with.
-          # It runs on every container start because the dev store is in-memory:
-          # a restart loses everything a one-shot Job would have written. The
-          # container does not reach Running until the hook succeeds, and a
-          # failed hook restarts the container.
+          # provisions it over loopback (provision/provision.sh, dev mode) on
+          # every container start, because the dev store is in-memory. A
+          # restart therefore mints a NEW key: everything encrypted or HMACed
+          # before it is unreadable. That is acceptable only for this
+          # disposable local render.
+{{- end }}
           lifecycle:
             postStart:
               exec:
                 command: {{ .Deployment.Parameters.ProvisionCommand }}
 {{- end }}
-          # Modest dev-mode footprint. Production Raft mode wants
-          # ~512Mi RAM minimum; bump in overlay.
           resources:
             requests:
               cpu: 50m
+{{- if .Deployment.Parameters.Durable }}
+              memory: 128Mi
+{{- else }}
               memory: 64Mi
+{{- end }}
             limits:
               cpu: 500m
+{{- if .Deployment.Parameters.Durable }}
+              memory: 512Mi
+{{- else }}
               memory: 256Mi
+{{- end }}
           # Vault's /v1/sys/health returns:
           #   200 — initialized, unsealed, active
           #   429 — unsealed and standby (multi-node)
           #   501 — not initialized
           #   503 — sealed
-          # Dev mode is auto-init + auto-unseal so 200 is what we
-          # want during startup/readiness; the busybox `wget` ships
-          # in the image's distroless-style /usr/bin layout.
+          # Startup and liveness only ask whether the process answers: a
+          # durable server is uninitialized until its first postStart hook
+          # completes, and sealed while its seal is unreachable — restarting it
+          # fixes neither. Readiness is strict: only an initialized, unsealed,
+          # active server receives traffic.
           startupProbe:
             httpGet:
               path: /v1/sys/health?standbyok=true&sealedok=true&uninitcode=200
@@ -130,26 +171,41 @@ spec:
             timeoutSeconds: 3
           livenessProbe:
             httpGet:
+{{- if .Deployment.Parameters.Durable }}
+              path: /v1/sys/health?standbyok=true&sealedok=true&uninitcode=200
+{{- else }}
               path: /v1/sys/health?standbyok=true
+{{- end }}
               port: 8200
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
-          # readOnlyRootFilesystem=true means anything that wants
-          # to write to disk needs an explicit volumeMount. Vault
-          # dev mode writes nothing persistent (in-memory store)
-          # but the binary touches /tmp during startup, and the
-          # entrypoint shell may scribble too — give it an emptyDir.
+          # readOnlyRootFilesystem: every write goes to an explicit mount.
           volumeMounts:
             - name: tmp
               mountPath: /tmp
             - name: home
               mountPath: /home/vault
+{{- if .Deployment.Parameters.Durable }}
+            - name: data
+              mountPath: /vault/data
+{{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
         - name: home
           emptyDir: {}
-      # No PVC — `vault server -dev` is an in-memory store, so a
-      # PersistentVolume would be wasted. Production overlays
-      # should add volumeClaimTemplates for Raft / file storage.
+{{- if .Deployment.Parameters.Durable }}
+  # raft storage and the init record (recovery key material). The claim uses the
+  # cluster's default StorageClass; the environment owns that choice, including
+  # its reclaim policy and snapshots.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+{{- end }}
+{{- end }}
