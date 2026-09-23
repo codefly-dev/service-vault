@@ -21,6 +21,16 @@ type Builder struct {
 	*Service
 }
 
+// deploymentTemplateParameters carries what the Service manifest cannot know on
+// its own: the in-cluster port core allocated to vault's http endpoint. Every
+// consumer is handed that port in its network mapping, so the Service has to
+// publish it and fold it onto 8200, the port the container listens on
+// (`-dev-listen-address` and every probe are pinned to it). Zero leaves the
+// template on 8200.
+type deploymentTemplateParameters struct {
+	ServicePort uint32
+}
+
 func NewBuilder() *Builder {
 	return &Builder{
 		Service: NewService(),
@@ -108,10 +118,12 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	ctx = s.Wool.Inject(ctx)
 	s.SetDockerImage(image)
 
+	parameters := &deploymentTemplateParameters{}
 	var restrictedConfiguration *basev0.Configuration
 	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
+		Parameters:           parameters,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
 			if services.IsRestrictedOutputProfile(deployment.Profile) {
 				references, err := vaultRestrictedSecretReferences(deployment.Kubernetes.GetSecretReferences())
@@ -130,6 +142,10 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 			if err != nil {
 				return err
 			}
+			// The Service publishes the port core allocated to the endpoint — the
+			// one every consumer dials — and targets 8200. Same mechanism as
+			// redis: the mapping the CLI hands this Deploy carries our own endpoint.
+			parameters.ServicePort = instance.GetPort()
 			if deployment.Profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1 {
 				vaultToken, err := s.VaultTokenFromConfiguration(ctx, req.GetConfiguration())
 				if err != nil {

@@ -17,10 +17,137 @@ import (
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
+// With no allocated port the Service stays on the container port and headless:
+// the rendering every deployment produced before the port was read from the
+// network mapping.
 func TestDeploymentTemplates(t *testing.T) {
-	agenttesting.AssertKustomizeTemplates(t, deploymentFS, nil)
+	dir := agenttesting.AssertKustomizeTemplates(t, deploymentFS, deploymentTemplateParameters{})
+	service := parseRenderedService(t, dir)
+	require.Equal(t, []renderedServicePort{{Name: "http", Port: 8200, TargetPort: 8200}}, service.Spec.Ports)
+	require.Equal(t, "None", service.Spec.ClusterIP, "a Service that translates nothing stays headless")
+}
+
+// Core allocates the http endpoint its canonical in-cluster port (8080, not
+// 8200) and hands that to every consumer, so the Service has to publish it and
+// fold it onto 8200. A headless Service cannot: clients resolve it straight to
+// pod IPs and dial the published port themselves.
+func TestDeploymentTemplatesPublishAllocatedServicePort(t *testing.T) {
+	dir := agenttesting.AssertKustomizeTemplates(t, deploymentFS, deploymentTemplateParameters{ServicePort: 8080})
+	service := parseRenderedService(t, dir)
+	require.Equal(t, []renderedServicePort{{Name: "http", Port: 8080, TargetPort: 8200}}, service.Spec.Ports)
+	require.NotEqual(t, "None", service.Spec.ClusterIP, "publishing a translated port needs a ClusterIP")
+	statefulSet, err := os.ReadFile(filepath.Join(dir, "base", "stateful-set.yaml"))
+	require.NoError(t, err)
+	require.Contains(t, string(statefulSet), "containerPort: 8200")
+	require.NotContains(t, string(statefulSet), "8080")
+}
+
+// The Deploy path reads the port from the mapping the CLI hands it for vault's
+// own endpoint — the same instance whose address it advertises to consumers.
+func TestDeployedServicePublishesAllocatedPort(t *testing.T) {
+	ctx := context.Background()
+	builder, _ := deploymentBuilder(t)
+	allocated := containerVaultInstance()
+	allocated.Host = "vault.codefly-test.svc.cluster.local:8080"
+	allocated.Port = 8080
+	allocated.Address = "http://vault.codefly-test.svc.cluster.local:8080"
+	networkMappings := []*basev0.NetworkMapping{{
+		Endpoint:  builder.HttpEndpoint,
+		Instances: []*basev0.NetworkInstance{allocated},
+	}}
+	destination := t.TempDir()
+
+	response, err := builder.Deploy(ctx, deploymentRequest(
+		destination,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		networkMappings,
+		nil,
+		map[string]*builderv0.KubernetesSecretKeyReference{
+			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
+				Name: "vault-credentials",
+				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
+			},
+		},
+	))
+	require.NoError(t, err)
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+
+	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
+	require.NoError(t, err)
+	require.Equal(t, allocated.GetAddress(), address)
+
+	service := parseRenderedService(t, destination)
+	require.Equal(t, []renderedServicePort{{Name: "http", Port: 8080, TargetPort: 8200}}, service.Spec.Ports)
+	require.NotEqual(t, "None", service.Spec.ClusterIP)
+}
+
+// A mapping on the container port needs no translation and renders the Service
+// byte-for-byte as before.
+func TestNativePortDeploymentRendersUnchangedService(t *testing.T) {
+	ctx := context.Background()
+	builder, networkMappings := deploymentBuilder(t)
+	destination := t.TempDir()
+
+	response, err := builder.Deploy(ctx, deploymentRequest(
+		destination,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		networkMappings,
+		nil,
+		map[string]*builderv0.KubernetesSecretKeyReference{
+			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
+				Name: "vault-credentials",
+				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
+			},
+		},
+	))
+	require.NoError(t, err)
+	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+
+	service, err := os.ReadFile(filepath.Join(destination, "base", "service.yaml"))
+	require.NoError(t, err)
+	want := `apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: codefly-test
+spec:
+  selector:
+    app: vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+  # Headless — clients reach vault via the StatefulSet pod's stable
+  # DNS (vault-0.vault.<ns>.svc). For an external API surface in
+  # prod, swap to ClusterIP/LoadBalancer in the overlay.
+  clusterIP: None
+`
+	require.Equal(t, want, string(service))
+}
+
+type renderedServicePort struct {
+	Name       string `yaml:"name"`
+	Port       uint32 `yaml:"port"`
+	TargetPort uint32 `yaml:"targetPort"`
+}
+
+type renderedService struct {
+	Spec struct {
+		ClusterIP string                `yaml:"clusterIP"`
+		Ports     []renderedServicePort `yaml:"ports"`
+	} `yaml:"spec"`
+}
+
+func parseRenderedService(t *testing.T, destination string) renderedService {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(destination, "base", "service.yaml"))
+	require.NoError(t, err)
+	var service renderedService
+	require.NoError(t, yaml.Unmarshal(content, &service))
+	return service
 }
 
 func TestDeploymentProfiles(t *testing.T) {
