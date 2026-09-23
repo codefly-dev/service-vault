@@ -1,3 +1,14 @@
+{{- /*
+  port is the in-cluster port core allocated to the http endpoint and handed to
+  every consumer; it falls back to the container port when no mapping set it.
+  targetPort stays the container port. A headless Service (clusterIP: None)
+  resolves straight to pod IPs with no kube-proxy translation, so it is only
+  correct when nothing needs translating — port equal to targetPort. Publishing
+  a different port needs a ClusterIP. spec.clusterIP is immutable: a Service
+  already applied headless has to be deleted before the ClusterIP one applies.
+*/ -}}
+{{- $port := .Deployment.Parameters.ServicePort -}}
+{{- if not $port }}{{ $port = 8200 }}{{ end -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,9 +19,11 @@ spec:
     app: {{.Name}}
   ports:
     - name: http
-      port: 8200
+      port: {{ $port }}
       targetPort: 8200
+{{- if eq $port 8200 }}
   # Headless — clients reach vault via the StatefulSet pod's stable
   # DNS (vault-0.vault.<ns>.svc). For an external API surface in
   # prod, swap to ClusterIP/LoadBalancer in the overlay.
   clusterIP: None
+{{- end }}
