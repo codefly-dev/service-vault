@@ -25,10 +25,26 @@ var requirements = builders.NewDependencies(agent.Name,
 	builders.NewDependency("service.codefly.yaml"),
 )
 
+// vaultTokenEnvironmentVariable carries the token into the in-memory dev server
+// of the ephemeral local-apply render, which boots with it as its root token.
 const vaultTokenEnvironmentVariable = "VAULT_DEV_ROOT_TOKEN_ID"
+
+// vaultAccessTokenEnvironmentVariable carries the composition-supplied token
+// into the durable server of a restricted render, where provision/provision.sh
+// installs it. A durable server has no dev root token, so the variable is
+// deliberately not VAULT_DEV_ROOT_TOKEN_ID (nor VAULT_TOKEN, which the vault
+// CLI would pick up implicitly).
+const vaultAccessTokenEnvironmentVariable = "VAULT_ACCESS_TOKEN"
 
 type Settings struct {
 	TransitKey string `yaml:"transit-key"`
+
+	// ExternalInstances binds named deployment environments to a Vault
+	// provisioned and operated outside this service. A bound environment's
+	// deployment renders no Vault workload: consumers receive the external
+	// address and how to authenticate to it. Keyed by environment so two
+	// environments can never silently share one binding; see external.go.
+	ExternalInstances map[string]ExternalInstance `yaml:"external-instances"`
 }
 
 var image = &resources.DockerImage{

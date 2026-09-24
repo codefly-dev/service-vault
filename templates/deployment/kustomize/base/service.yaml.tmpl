@@ -1,3 +1,4 @@
+{{- if not .Deployment.Parameters.External }}
 {{- /*
   port is the in-cluster port core allocated to the http endpoint and handed to
   every consumer; it falls back to the container port when no mapping set it.
@@ -26,4 +27,5 @@ spec:
   # DNS (vault-0.vault.<ns>.svc). For an external API surface in
   # prod, swap to ClusterIP/LoadBalancer in the overlay.
   clusterIP: None
+{{- end }}
 {{- end }}

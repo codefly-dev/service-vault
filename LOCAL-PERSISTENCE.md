@@ -2,7 +2,9 @@
 
 Docker and Nix local runtimes use Vault's file backend. The server process/container
 can be replaced without replacing transit keys or the KV v2 data used by consumers.
-Deployment templates and production initialization/unseal policy are unchanged.
+Deployments are described in the agent README: restricted renders run a durable,
+auto-unsealed raft server or bind an external instance; only the ephemeral
+local-apply render still runs the in-memory dev server.
 
 State lives under Codefly's `runtime-cache/<workspace-service-identity>/vault-state`:
 

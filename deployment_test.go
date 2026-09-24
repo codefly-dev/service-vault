@@ -244,7 +244,8 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.NotContains(t, restrictedTree, "kind: Secret")
 	require.NotContains(t, restrictedTree, "\ndata:")
 	require.NotContains(t, restrictedTree, "\nstringData:")
-	require.Contains(t, restrictedTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
+	require.Contains(t, restrictedTree, "name: VAULT_ACCESS_TOKEN")
+	require.NotContains(t, restrictedTree, "name: VAULT_DEV_ROOT_TOKEN_ID")
 	require.Contains(t, restrictedTree, "name: vault-credentials")
 	require.Contains(t, restrictedTree, "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN")
 	require.Contains(t, restrictedTree, image.FullName())
@@ -290,7 +291,7 @@ func TestDeploymentProfiles(t *testing.T) {
 	// it holds whether core shares or copies the validation into the bundle.
 	require.Equal(t, output.GetValidation().GetStaticValidation(), bundle.GetValidation().GetStaticValidation())
 	require.True(t, bundle.GetValidation().GetRestricted())
-	require.Equal(t, "vault-credentials", bundle.GetSecretReferences()["VAULT_DEV_ROOT_TOKEN_ID"].GetName())
+	require.Equal(t, "vault-credentials", bundle.GetSecretReferences()["VAULT_ACCESS_TOKEN"].GetName())
 }
 
 // TestRestrictedProfilesRenderIdenticalBundle locks the migration-window
