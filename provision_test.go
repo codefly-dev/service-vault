@@ -248,14 +248,22 @@ func TestDeployRefusesAnInvalidTransitKeyName(t *testing.T) {
 
 // fakeVault is a `vault` CLI double for exercising the provisioning script's
 // dev-mode control flow (durable mode runs against the real image in
-// durable_test.go). It models only the five invocations dev mode makes, keeps
-// Vault's state as files, and appends every call to a log.
+// durable_test.go). It models only the invocations dev mode makes, keeps Vault's
+// state as files, and appends every call to a log. It does not enforce
+// policies — what a scoped token may actually reach is asserted against the
+// real Vault in durable_test.go and in TestEphemeralRenderIssuesAScopedToken.
 const fakeVault = `#!/bin/sh
 state="$FAKE_VAULT_STATE"
 echo "$VAULT_ADDR $VAULT_TOKEN $*" >> "$state/calls"
 if [ -e "$state/down" ]; then echo "connection refused" >&2; exit 1; fi
 case "$*" in
 status) exit 0 ;;
+"read -field=type sys/mounts/secret")
+	if [ -e "$state/kv" ]; then cat "$state/kv"; exit 0; fi
+	echo kv ;;
+"read -field=options sys/mounts/secret")
+	if [ -e "$state/kv-options" ]; then cat "$state/kv-options"; exit 0; fi
+	echo "map[version:2]" ;;
 "read -field=type sys/mounts/transit")
 	if [ -e "$state/mount" ]; then cat "$state/mount"; exit 0; fi
 	echo "No secret engine mount at transit/" >&2; exit 2 ;;
@@ -271,6 +279,32 @@ status) exit 0 ;;
 "write -f transit/keys/"*" type=aes256-gcm96")
 	name="$(echo "$*" | sed 's|^write -f transit/keys/||; s| type=aes256-gcm96$||')"
 	echo aes256-gcm96 > "$state/key-$name"; echo "Success! Data written to: transit/keys/$name" ;;
+"write sys/auth/token/tune max_lease_ttl="*)
+	echo "$*" | sed 's|^write sys/auth/token/tune max_lease_ttl=||' > "$state/token-store-max-ttl"
+	echo "Success! Data written to: sys/auth/token/tune" ;;
+"policy write "*" -")
+	name="$(echo "$*" | sed 's|^policy write ||; s| -$||')"
+	if [ -e "$state/policy-deny" ]; then cat > /dev/null; echo "permission denied" >&2; exit 2; fi
+	cat > "$state/policy-$name"; echo "Success! Uploaded policy: $name" ;;
+"policy read "*)
+	name="$(echo "$*" | sed 's|^policy read ||')"
+	if [ -e "$state/policy-$name" ]; then cat "$state/policy-$name"; exit 0; fi
+	echo "No policy named: $name" >&2; exit 2 ;;
+"token lookup")
+	if [ -e "$state/token-$VAULT_TOKEN" ]; then exit 0; fi
+	echo "bad token" >&2; exit 2 ;;
+"read -field=policies auth/token/lookup-self")
+	if [ -e "$state/token-$VAULT_TOKEN" ]; then cat "$state/token-$VAULT_TOKEN"; exit 0; fi
+	echo "bad token" >&2; exit 2 ;;
+"write auth/token/create-orphan -")
+	body="$(cat)"
+	id="$(echo "$body" | sed 's|.*"id":"\([^"]*\)".*|\1|')"
+	policies="$(echo "$body" | sed 's|.*"policies":\["\([^"]*\)"\].*|\1|')"
+	echo "[$policies default]" > "$state/token-$id"
+	echo "Success! Data written to: auth/token/create-orphan" ;;
+"token revoke "*)
+	id="$(echo "$*" | sed 's|^token revoke ||')"
+	rm -f "$state/token-$id"; echo "Success! Revoked token" ;;
 *) echo "fake vault: unexpected invocation: $*" >&2; exit 99 ;;
 esac
 `
@@ -278,12 +312,17 @@ esac
 type provisionRun struct {
 	state string
 	bin   string
+	// root stands in for the bootstrap token provision/dev.sh mints into the
+	// container's tmpfs: the credential the privileged steps run under, which
+	// never leaves the container and is never published.
+	root string
 }
 
 func newProvisionRun(t *testing.T) *provisionRun {
 	t.Helper()
-	run := &provisionRun{state: t.TempDir(), bin: t.TempDir()}
+	run := &provisionRun{state: t.TempDir(), bin: t.TempDir(), root: "dev-bootstrap-root"}
 	require.NoError(t, os.WriteFile(filepath.Join(run.bin, "vault"), []byte(fakeVault), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(run.state, "dev-root"), []byte(run.root), 0o600))
 	return run
 }
 
@@ -301,9 +340,10 @@ func (run *provisionRun) exec(t *testing.T, token string, args ...string) (int, 
 		"PATH=" + run.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"FAKE_VAULT_STATE=" + run.state,
 		"VAULT_PROVISION_ATTEMPTS=2",
+		"VAULT_DEV_ROOT_FILE=" + filepath.Join(run.state, "dev-root"),
 	}
 	if token != "" {
-		cmd.Env = append(cmd.Env, "VAULT_DEV_ROOT_TOKEN_ID="+token)
+		cmd.Env = append(cmd.Env, vaultAccessTokenEnvironmentVariable+"="+token)
 	}
 	out, err := cmd.CombinedOutput()
 	if exitErr, ok := err.(*exec.ExitError); ok {
@@ -336,36 +376,87 @@ func (run *provisionRun) writes(t *testing.T) []string {
 func TestTransitProvisionScriptIsIdempotent(t *testing.T) {
 	run := newProvisionRun(t)
 
-	code, out := run.exec(t, "root-token", "api-keys")
+	code, out := run.exec(t, "consumer-token", "api-keys")
 	require.Equal(t, 0, code, out)
 	require.Equal(t, []string{
-		"http://127.0.0.1:8200 root-token secrets enable -path=transit transit",
-		"http://127.0.0.1:8200 root-token write -f transit/keys/api-keys type=aes256-gcm96",
-	}, run.writes(t), "a fresh Vault gets the engine and the key, over loopback, with the container's root token")
+		"http://127.0.0.1:8200 " + run.root + " secrets enable -path=transit transit",
+		"http://127.0.0.1:8200 " + run.root + " write -f transit/keys/api-keys type=aes256-gcm96",
+		"http://127.0.0.1:8200 " + run.root + " policy write codefly-access -",
+		"http://127.0.0.1:8200 " + run.root + " write sys/auth/token/tune max_lease_ttl=" + consumerTokenTTL,
+		"http://127.0.0.1:8200 " + run.root + " write auth/token/create-orphan -",
+	}, run.writes(t),
+		"a fresh Vault gets the engine, the key and the consumer policy over loopback under the container's bootstrap token, never under the token consumers hold")
 
-	// Every later start of the same process finds both and writes nothing.
+	// Every later start of the same process finds all of it and writes nothing.
 	for range 2 {
-		code, out = run.exec(t, "root-token", "api-keys")
+		code, out = run.exec(t, "consumer-token", "api-keys")
 		require.Equal(t, 0, code, out)
 	}
-	require.Len(t, run.writes(t), 2, "re-running must not re-enable the engine or rewrite the key")
+	require.Len(t, run.writes(t), 5, "re-running must not re-enable the engine, rewrite the key or reissue the token")
+}
+
+// SP-SEC-04: the token the script installs for consumers carries the consumer
+// policy and nothing else — the body it sends names no root policy.
+func TestProvisionScriptInstallsAScopedAccessToken(t *testing.T) {
+	run := newProvisionRun(t)
+	code, out := run.exec(t, "consumer-token", "api-keys")
+	require.Equal(t, 0, code, out)
+	require.Contains(t, out, "installed the access token")
+
+	policies, err := os.ReadFile(filepath.Join(run.state, "token-consumer-token"))
+	require.NoError(t, err)
+	require.Equal(t, "[codefly-access default]\n", string(policies),
+		"the installed access token carries only the consumer policy")
+
+	policy, err := os.ReadFile(filepath.Join(run.state, "policy-codefly-access"))
+	require.NoError(t, err)
+	require.Equal(t, consumerPolicy("api-keys"), string(policy))
+}
+
+// A Vault provisioned before the access token was scoped holds it with the root
+// policy. With a bootstrap token in hand the script replaces it; without one it
+// refuses rather than keep publishing it.
+func TestProvisionScriptReplacesARootPolicyAccessToken(t *testing.T) {
+	t.Run("replaced while a bootstrap token is held", func(t *testing.T) {
+		run := newProvisionRun(t)
+		run.mark(t, "token-consumer-token", "[root]\n")
+		code, out := run.exec(t, "consumer-token", "api-keys")
+		require.Equal(t, 0, code, out)
+		require.Contains(t, out, `revoked an access token that was not scoped to "codefly-access"`)
+		policies, err := os.ReadFile(filepath.Join(run.state, "token-consumer-token"))
+		require.NoError(t, err)
+		require.Equal(t, "[codefly-access default]\n", string(policies))
+	})
+	t.Run("refused with no bootstrap token", func(t *testing.T) {
+		run := newProvisionRun(t)
+		run.mark(t, "token-consumer-token", "[root]\n")
+		require.NoError(t, os.Remove(filepath.Join(run.state, "dev-root")))
+		code, out := run.exec(t, "consumer-token", "api-keys")
+		require.Equal(t, 1, code)
+		require.Contains(t, out, `holds VAULT_ACCESS_TOKEN with more than the "codefly-access" policy`)
+		policies, err := os.ReadFile(filepath.Join(run.state, "token-consumer-token"))
+		require.NoError(t, err)
+		require.Equal(t, "[root]\n", string(policies), "an over-privileged token is reported, never silently served")
+	})
 }
 
 func TestTransitProvisionScriptAcceptsExistingState(t *testing.T) {
 	run := newProvisionRun(t)
 	run.mark(t, "mount", "transit\n")
 	run.mark(t, "key-api-keys", "chacha20-poly1305\n")
+	run.mark(t, "policy-codefly-access", consumerPolicy("api-keys"))
+	run.mark(t, "token-consumer-token", "[codefly-access default]\n")
 
-	code, out := run.exec(t, "root-token", "api-keys")
+	code, out := run.exec(t, "consumer-token", "api-keys")
 	require.Equal(t, 0, code, out)
-	require.Empty(t, run.writes(t), "an existing engine and key are success and are left as they are")
+	require.Empty(t, run.writes(t), "an existing engine, key, policy and scoped token are success and are left as they are")
 }
 
 func TestTransitProvisionScriptConvergesOnALostRace(t *testing.T) {
 	run := newProvisionRun(t)
 	run.mark(t, "race", "")
 
-	code, out := run.exec(t, "root-token", "api-keys")
+	code, out := run.exec(t, "consumer-token", "api-keys")
 	require.Equal(t, 0, code, out)
 	content, err := os.ReadFile(filepath.Join(run.state, "key-api-keys"))
 	require.NoError(t, err)
@@ -376,7 +467,7 @@ func TestTransitProvisionScriptFailsClosed(t *testing.T) {
 	t.Run("transit/ holds another engine", func(t *testing.T) {
 		run := newProvisionRun(t)
 		run.mark(t, "mount", "kv\n")
-		code, out := run.exec(t, "root-token", "api-keys")
+		code, out := run.exec(t, "consumer-token", "api-keys")
 		require.Equal(t, 1, code)
 		require.Contains(t, out, `transit/ is mounted as "kv", not a transit engine`)
 		require.Empty(t, run.writes(t))
@@ -384,14 +475,23 @@ func TestTransitProvisionScriptFailsClosed(t *testing.T) {
 	t.Run("engine cannot be enabled", func(t *testing.T) {
 		run := newProvisionRun(t)
 		run.mark(t, "deny", "")
-		code, out := run.exec(t, "root-token", "api-keys")
+		code, out := run.exec(t, "consumer-token", "api-keys")
 		require.Equal(t, 1, code)
 		require.Contains(t, out, "cannot enable the transit engine: permission denied")
+	})
+	t.Run("the consumer policy cannot be written", func(t *testing.T) {
+		run := newProvisionRun(t)
+		run.mark(t, "policy-deny", "")
+		code, out := run.exec(t, "consumer-token", "api-keys")
+		require.Equal(t, 1, code)
+		require.Contains(t, out, `cannot write the "codefly-access" policy`)
+		require.NoFileExists(t, filepath.Join(run.state, "token-consumer-token"),
+			"no access token is installed without the policy that scopes it")
 	})
 	t.Run("vault never answers", func(t *testing.T) {
 		run := newProvisionRun(t)
 		run.mark(t, "down", "")
-		code, out := run.exec(t, "root-token", "api-keys")
+		code, out := run.exec(t, "consumer-token", "api-keys")
 		require.Equal(t, 1, code)
 		require.Contains(t, out, "did not become ready")
 	})
@@ -399,79 +499,196 @@ func TestTransitProvisionScriptFailsClosed(t *testing.T) {
 		run := newProvisionRun(t)
 		code, out := run.exec(t, "", "api-keys")
 		require.Equal(t, 64, code)
-		require.Contains(t, out, "VAULT_DEV_ROOT_TOKEN_ID is not set")
+		require.Contains(t, out, "VAULT_ACCESS_TOKEN is not set")
 		require.Empty(t, run.calls(t))
 	})
 	t.Run("no key name", func(t *testing.T) {
 		run := newProvisionRun(t)
-		code, out := run.exec(t, "root-token")
+		code, out := run.exec(t, "consumer-token")
 		require.Equal(t, 64, code)
 		require.Contains(t, out, "usage: provision.sh <dev|durable> <transit-key-name>")
 		require.Empty(t, run.calls(t))
 	})
+	t.Run("the in-memory server's bootstrap credential is missing", func(t *testing.T) {
+		run := newProvisionRun(t)
+		require.NoError(t, os.Remove(filepath.Join(run.state, "dev-root")))
+		code, out := run.exec(t, "consumer-token", "api-keys")
+		require.Equal(t, 1, code)
+		require.Contains(t, out, "provision/dev.sh did not start this container")
+	})
 }
 
-// TestRenderedHookProvisionsThePinnedVault runs the pinned image the way the
-// StatefulSet does — `server -dev`, read-only root filesystem, the root token
-// in VAULT_DEV_ROOT_TOKEN_ID — then executes the rendered postStart command
-// inside it, twice, and calls transit the way a consumer does.
-func TestRenderedHookProvisionsThePinnedVault(t *testing.T) {
+// ephemeralHarness runs the pinned image exactly as the ephemeral local-apply
+// render does: the rendered container command (provision/dev.sh) on a read-only
+// root filesystem with the consumer's token in VAULT_ACCESS_TOKEN, and the
+// rendered postStart hook executed inside it.
+type ephemeralHarness struct {
+	t         *testing.T
+	ctx       context.Context
+	container string
+	address   string
+	hook      []string
+	token     string
+}
+
+func newEphemeralHarness(t *testing.T, token string) *ephemeralHarness {
+	t.Helper()
 	response, destination := deployEphemeral(t)
 	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
-	hook := renderedVaultContainer(t, destination).Lifecycle.PostStart.Exec.Command
-	require.NotEmpty(t, hook)
+	container := renderedVaultContainer(t, destination)
+	require.NotEmpty(t, container.Command)
+	require.NotEmpty(t, container.Lifecycle.PostStart.Exec.Command)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
-	defer cancel()
-	docker := func(args ...string) string {
-		t.Helper()
-		var stderr strings.Builder
-		cmd := exec.CommandContext(ctx, "docker", args...)
-		cmd.Stderr = &stderr
-		raw, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("docker %s failed: %v (%s%s)", args[0], err, raw, strings.TrimSpace(stderr.String()))
-		}
-		return strings.TrimSpace(string(raw))
-	}
-	const token = "provision-test-root-token"
-	id := docker("run", "-d", "--read-only",
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+	t.Cleanup(cancel)
+	h := &ephemeralHarness{t: t, ctx: ctx, hook: container.Lifecycle.PostStart.Exec.Command, token: token}
+
+	args := []string{"run", "-d", "--read-only",
 		"--tmpfs", "/tmp:mode=1777", "--tmpfs", "/home/vault:mode=1777",
-		"-e", vaultTokenEnvironmentVariable+"="+token, "-e", "SKIP_SETCAP=true",
+		"-e", vaultAccessTokenEnvironmentVariable + "=" + token,
+		"-e", renderProfileEnvironmentName + "=" + localApplyRenderProfile,
 		"-p", "127.0.0.1::8200",
-		image.FullName(), "server", "-dev", "-dev-listen-address=0.0.0.0:8200")
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", id).Run() })
-	address := "http://" + docker("port", id, "8200/tcp")
+		"--entrypoint", container.Command[0], image.FullName(),
+	}
+	args = append(args, container.Command[1:]...)
+	h.container = h.docker(args...)
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", h.container).Run() })
+	h.address = "http://" + h.docker("port", h.container, "8200/tcp")
+	return h
+}
+
+func (h *ephemeralHarness) docker(args ...string) string {
+	h.t.Helper()
+	var stderr strings.Builder
+	cmd := exec.CommandContext(h.ctx, "docker", args...)
+	cmd.Stderr = &stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		h.t.Fatalf("docker %s failed: %v (%s%s)", args[0], err, raw, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// provision runs the rendered hook in the container, as the kubelet does.
+func (h *ephemeralHarness) provision() string {
+	h.t.Helper()
+	return h.docker(append([]string{"exec", h.container}, h.hook...)...)
+}
+
+// output is everything the container has written to either stream — what a cell
+// retains for the workload.
+func (h *ephemeralHarness) output() string {
+	h.t.Helper()
+	var combined strings.Builder
+	cmd := exec.CommandContext(h.ctx, "docker", "logs", h.container)
+	cmd.Stdout, cmd.Stderr = &combined, &combined
+	require.NoError(h.t, cmd.Run())
+	return combined.String()
+}
+
+func (h *ephemeralHarness) call(token, method, path, body string) (int, map[string]any) {
+	h.t.Helper()
+	request, err := http.NewRequestWithContext(h.ctx, method, h.address+path, strings.NewReader(body))
+	require.NoError(h.t, err)
+	request.Header.Set("X-Vault-Token", token)
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(h.t, err)
+	defer func() { _ = response.Body.Close() }()
+	raw, err := io.ReadAll(response.Body)
+	require.NoError(h.t, err)
+	var decoded struct {
+		Data map[string]any `json:"data"`
+	}
+	if len(raw) > 0 && json.Valid(raw) {
+		require.NoError(h.t, json.Unmarshal(raw, &decoded))
+	}
+	return response.StatusCode, decoded.Data
+}
+
+// TestRenderedHookProvisionsThePinnedVault runs the rendered postStart command
+// inside the rendered container, twice, and calls transit the way a consumer
+// does — with the token the composition supplied, which the hook installed
+// scoped to the consumer policy.
+func TestRenderedHookProvisionsThePinnedVault(t *testing.T) {
+	h := newEphemeralHarness(t, "provision-test-access-token")
 
 	// The hook starts with the server, so the first run also covers the wait.
 	for range 2 {
-		out := docker(append([]string{"exec", id}, hook...)...)
-		require.Contains(t, out, `transit engine and key "api-keys" ready`)
+		require.Contains(t, h.provision(), `transit engine and key "api-keys" ready`)
 	}
 
-	call := func(path, body string) map[string]any {
-		t.Helper()
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, address+path, strings.NewReader(body))
-		require.NoError(t, err)
-		request.Header.Set("X-Vault-Token", token)
-		response, err := http.DefaultClient.Do(request)
-		require.NoError(t, err)
-		defer func() { _ = response.Body.Close() }()
-		raw, err := io.ReadAll(response.Body)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, response.StatusCode, string(raw))
-		var decoded struct {
-			Data map[string]any `json:"data"`
-		}
-		require.NoError(t, json.Unmarshal(raw, &decoded))
-		return decoded.Data
-	}
 	plaintext := base64.StdEncoding.EncodeToString([]byte("credential"))
-	encrypted := call("/v1/transit/encrypt/api-keys", fmt.Sprintf(`{"plaintext":%q}`, plaintext))
+	status, encrypted := h.call(h.token, http.MethodPost, "/v1/transit/encrypt/api-keys", fmt.Sprintf(`{"plaintext":%q}`, plaintext))
+	require.Equal(t, http.StatusOK, status)
 	require.Regexp(t, `^vault:v1:`, encrypted["ciphertext"], "re-running the hook must not rotate the key")
-	decrypted := call("/v1/transit/decrypt/api-keys", fmt.Sprintf(`{"ciphertext":%q}`, encrypted["ciphertext"]))
+	status, decrypted := h.call(h.token, http.MethodPost, "/v1/transit/decrypt/api-keys", fmt.Sprintf(`{"ciphertext":%q}`, encrypted["ciphertext"]))
+	require.Equal(t, http.StatusOK, status)
 	require.Equal(t, plaintext, decrypted["plaintext"])
-	require.NotEmpty(t, call("/v1/transit/hmac/api-keys", fmt.Sprintf(`{"input":%q}`, plaintext))["hmac"])
+	status, hmac := h.call(h.token, http.MethodPost, "/v1/transit/hmac/api-keys", fmt.Sprintf(`{"input":%q}`, plaintext))
+	require.Equal(t, http.StatusOK, status)
+	require.NotEmpty(t, hmac["hmac"])
+	status, _ = h.call(h.token, http.MethodPost, "/v1/secret/data/example", `{"data":{"value":"seed"}}`)
+	require.Equal(t, http.StatusOK, status)
+	status, stored := h.call(h.token, http.MethodGet, "/v1/secret/data/example", "")
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, map[string]any{"value": "seed"}, stored["data"])
+}
+
+// SP-SEC-04 against the real server: the token consumers present reaches its
+// own paths and nothing else. It is not the store's root token — the store's
+// root token exists only inside the container and is not this value.
+func TestEphemeralRenderIssuesAScopedToken(t *testing.T) {
+	h := newEphemeralHarness(t, "ephemeral-scope-access-token")
+	require.Contains(t, h.provision(), "installed the access token")
+
+	status, lookup := h.call(h.token, http.MethodGet, "/v1/auth/token/lookup-self", "")
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, []any{consumerPolicyName, "default"}, lookup["policies"])
+	require.Equal(t, true, lookup["orphan"])
+	require.Greater(t, lookup["ttl"], float64(9*365*24*time.Hour/time.Second),
+		"scope must not have cost the token its lifetime")
+
+	bootstrapRoot := h.docker("exec", h.container, "cat", "/tmp/vault-dev-root")
+	require.Len(t, bootstrapRoot, 64)
+	require.NotEqual(t, h.token, bootstrapRoot, "the consumer's token is not the store's root token")
+
+	for _, denied := range []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/v1/sys/mounts", ""},
+		{http.MethodPost, "/v1/sys/mounts/another", `{"type":"kv"}`},
+		{http.MethodGet, "/v1/sys/policies/acl/" + consumerPolicyName, ""},
+		{http.MethodPost, "/v1/sys/policies/acl/widen", `{"policy":"path \"*\" { capabilities = [\"sudo\"] }"}`},
+		{http.MethodPost, "/v1/auth/token/create-orphan", `{"policies":["root"]}`},
+		{http.MethodPost, "/v1/transit/keys/another-key", `{"type":"aes256-gcm96"}`},
+		{http.MethodPost, "/v1/transit/keys/api-keys/rotate", ""},
+		{http.MethodPost, "/v1/transit/keys/api-keys/config", `{"deletion_allowed":true}`},
+	} {
+		status, _ = h.call(h.token, denied.method, denied.path, denied.body)
+		require.Equal(t, http.StatusForbidden, status, "%s %s was permitted", denied.method, denied.path)
+	}
+}
+
+// SP-SEC-03: no start-up credential appears in the workload's output, in
+// development mode either. `vault server -dev` announces its unseal key and its
+// root token on standard output; provision/dev.sh keeps that stream out of the
+// container's output and leaves the log stream untouched.
+func TestEphemeralRenderKeepsStartupCredentialsOutOfOutput(t *testing.T) {
+	h := newEphemeralHarness(t, "ephemeral-log-access-token")
+	require.Contains(t, h.provision(), `transit engine and key "api-keys" ready`)
+
+	output := h.output()
+	// The server really did start and really is logging into this stream.
+	require.Contains(t, output, "core: vault is unsealed")
+	require.Contains(t, output, "successful mount: namespace=\"\" path=transit/")
+
+	bootstrapRoot := h.docker("exec", h.container, "cat", "/tmp/vault-dev-root")
+	require.Len(t, bootstrapRoot, 64)
+	require.NotContains(t, output, bootstrapRoot, "the store's root token is in the workload's output")
+	require.NotContains(t, output, h.token, "the consumer's token is in the workload's output")
+	for _, label := range []string{"Unseal Key:", "Root Token:"} {
+		require.NotContains(t, output, label, "the dev banner's %q line is in the workload's output", label)
+	}
 }
 
 // The local runtime keeps provisioning through the HTTP API on Start, exactly
@@ -516,7 +733,10 @@ func TestRuntimeEnableTransitIsUnchanged(t *testing.T) {
 				runtime.TransitKey = test.transitKey
 			}
 			runtime.vaultAddress = server.URL
-			runtime.vaultToken = "local-token"
+			// Mounting and key creation are privileged: they present local
+			// custody's administrative token, never the consumer's.
+			runtime.vaultAdminToken = "local-admin-token"
+			runtime.vaultToken = "local-consumer-token"
 			err := runtime.enableTransit(context.Background())
 			if test.wantErr != "" {
 				require.ErrorContains(t, err, test.wantErr)
@@ -524,8 +744,8 @@ func TestRuntimeEnableTransitIsUnchanged(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, []request{
-				{http.MethodPost, "/v1/sys/mounts/transit", `{"type":"transit"}`, "local-token"},
-				{http.MethodPost, "/v1/transit/keys/" + test.wantKey, `{"type":"aes256-gcm96"}`, "local-token"},
+				{http.MethodPost, "/v1/sys/mounts/transit", `{"type":"transit"}`, "local-admin-token"},
+				{http.MethodPost, "/v1/transit/keys/" + test.wantKey, `{"type":"aes256-gcm96"}`, "local-admin-token"},
 			}, requests)
 		})
 	}

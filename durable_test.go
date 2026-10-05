@@ -246,16 +246,40 @@ func TestDurableVaultSurvivesRestart(t *testing.T) {
 	require.Contains(t, out, `transit engine and key "api-keys" ready`)
 
 	// The initial root token is gone from the volume and from Vault; the
-	// recovery key is kept; the access token is a non-expiring root-policy
-	// orphan the consumers and the environment's seeding present.
+	// recovery key is kept; the access token is a non-expiring orphan carrying
+	// only the consumer policy, which every consumer and the environment's
+	// seeding present.
 	record := h.initRecord(volume)
 	require.Equal(t, "", record["root_token"])
 	require.Len(t, record["recovery_keys_b64"], 1)
 	status, lookup := h.call(address, token, http.MethodGet, "/v1/auth/token/lookup-self", "")
 	require.Equal(t, http.StatusOK, status)
-	require.Equal(t, []any{"root"}, lookup["policies"])
+	require.Equal(t, []any{consumerPolicyName, "default"}, lookup["policies"])
 	require.Equal(t, true, lookup["orphan"])
-	require.EqualValues(t, 0, lookup["ttl"])
+	// Scope must not have cost the token its lifetime: consumers hold it as a
+	// static secret and a scoped token cannot renew itself, so a capped TTL
+	// would stop every consumer a month after provisioning.
+	require.Greater(t, lookup["ttl"], float64(9*365*24*time.Hour/time.Second),
+		"the access token expires inside a decade")
+
+	// SP-SEC-04 on the deployed shape: that token reaches its own paths and
+	// nothing else. No mount, no policy, no token minting, no other transit
+	// key, and no write to the key every ciphertext and HMAC depends on.
+	for _, denied := range []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/v1/sys/mounts", ""},
+		{http.MethodPost, "/v1/sys/mounts/another", `{"type":"kv"}`},
+		{http.MethodGet, "/v1/sys/policies/acl/" + consumerPolicyName, ""},
+		{http.MethodPost, "/v1/sys/policies/acl/widen", `{"policy":"path \"*\" { capabilities = [\"sudo\"] }"}`},
+		{http.MethodPost, "/v1/auth/token/create-orphan", `{"policies":["root"]}`},
+		{http.MethodPost, "/v1/transit/keys/another-key", `{"type":"aes256-gcm96"}`},
+		{http.MethodPost, "/v1/transit/keys/api-keys/rotate", ""},
+		{http.MethodPost, "/v1/transit/keys/api-keys/config", `{"deletion_allowed":true}`},
+	} {
+		status, _ = h.call(address, token, denied.method, denied.path, denied.body)
+		require.Equal(t, http.StatusForbidden, status, "%s %s was permitted", denied.method, denied.path)
+	}
 
 	// A consumer's state: a ciphertext, an HMAC, and a KV v2 secret written
 	// the way the environment seeds the host's signing key.

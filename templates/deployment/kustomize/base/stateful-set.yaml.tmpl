@@ -8,8 +8,10 @@
     transit keys every ciphertext and API-key HMAC depends on, and KV data —
     survives restarts, reschedules and rollouts.
   - Dev (the ephemeral local-apply profile): `vault server -dev`, in-memory,
-    re-provisioned on every start. Never a deployed shape: a restart loses
-    every key it held.
+    re-provisioned on every start, started by provision/dev.sh. Never a
+    deployed shape: a restart loses every key it held, so that script refuses
+    to start unless this render declares the local-apply context, and it keeps
+    the dev banner's unseal key and root token out of the container's output.
 */}}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -68,12 +70,12 @@ spec:
 {{- if .Deployment.Parameters.Durable }}
           command: {{ .Deployment.Parameters.ServerCommand }}
 {{- else }}
-          # SKIP_SETCAP avoids the IPC_LOCK capability requirement in pod
-          # sandboxes that don't grant it; -dev disables mlock anyway.
-          args:
-            - server
-            - -dev
-            - -dev-listen-address=0.0.0.0:8200
+          # provision/dev.sh: refuses to start unless VAULT_CODEFLY_RENDER_PROFILE
+          # below declares the local-apply context, mints the in-memory server's
+          # own bootstrap root token into the container's tmpfs, and starts
+          # `vault server -dev` with its banner — which carries that token and
+          # the unseal key — kept out of the container's output.
+          command: {{ .Deployment.Parameters.DevCommand }}
 {{- end }}
           ports:
             - name: http
@@ -87,9 +89,18 @@ spec:
             - name: CODEFLY__SERVICE
               value: {{ .Deployment.Parameters.ServiceName | printf "%q" }}
 {{- end }}
+{{- if .Deployment.Parameters.RenderProfile }}
+            # The context provision/dev.sh demands before it will start an
+            # in-memory store. Only this render declares it.
+            - name: VAULT_CODEFLY_RENDER_PROFILE
+              value: {{ .Deployment.Parameters.RenderProfile | printf "%q" }}
+{{- end }}
 {{- if not .Restricted }}
 {{- range $secretKey, $_ := .SecretMap }}
-            - name: VAULT_DEV_ROOT_TOKEN_ID
+            # The token consumers present. It is not the server's own root
+            # token in either render: the postStart hook installs it as an
+            # orphan carrying only the consumer policy.
+            - name: VAULT_ACCESS_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{$.Name}}-secret
@@ -105,27 +116,24 @@ spec:
                   optional: {{ $reference.Optional }}
 {{- end }}
 {{- end }}
-{{- if not .Deployment.Parameters.Durable }}
-            - name: SKIP_SETCAP
-              value: "true"
-{{- end }}
 {{- if .Deployment.Parameters.ProvisionCommand }}
 {{- if .Deployment.Parameters.Durable }}
-          # Initializes the server once, installs the composition-supplied
-          # access token, and makes sure KV v2 at secret/ and the transit
-          # engine and key exist (provision/provision.sh, durable mode). It
-          # runs on every start and is idempotent: existing state, above all an
-          # existing transit key, is never rewritten. The container does not
-          # reach Running until it succeeds; a failed hook restarts the
-          # container.
+          # Initializes the server once, makes sure KV v2 at secret/ and the
+          # transit engine and key exist, and installs the composition-supplied
+          # access token as an orphan carrying only the consumer policy
+          # (provision/provision.sh, durable mode). It runs on every start and
+          # is idempotent: existing state, above all an existing transit key, is
+          # never rewritten. The container does not reach Running until it
+          # succeeds; a failed hook restarts the container.
 {{- else }}
           # Consumers encrypt and HMAC through transit/ (the configured key), and
           # `vault server -dev` starts with no transit engine. The hook
-          # provisions it over loopback (provision/provision.sh, dev mode) on
-          # every container start, because the dev store is in-memory. A
-          # restart therefore mints a NEW key: everything encrypted or HMACed
-          # before it is unreadable. That is acceptable only for this
-          # disposable local render.
+          # provisions it over loopback and installs the access token under the
+          # consumer policy (provision/provision.sh, dev mode) on every
+          # container start, because the dev store is in-memory. A restart
+          # therefore mints a NEW key: everything encrypted or HMACed before it
+          # is unreadable. That is acceptable only for this disposable local
+          # render.
 {{- end }}
           lifecycle:
             postStart:

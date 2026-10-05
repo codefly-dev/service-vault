@@ -32,6 +32,31 @@ func newVaultLogWriter(w *wool.Wool, secrets ...string) io.Writer {
 	return newLineRedactingWriter(woollog.MustNew(w, vaultLog), secrets...)
 }
 
+// startupCredentialLabels are the labels a Vault server prints its own start-up
+// credentials under. A credential must not reach output whether or not this
+// process holds its value: a server started in development mode mints its
+// unseal key and root token itself and announces them under these labels, so
+// the label is redacted by name and the value never has to be known.
+var startupCredentialLabels = []string{"Unseal Key", "Root Token", "Recovery Key", "Initial Root Token"}
+
+// redactStartupCredential replaces the value after a start-up credential label,
+// leaving the label — and any share number between it and the colon — so the
+// line still reads as what it was.
+func redactStartupCredential(line string) string {
+	for _, label := range startupCredentialLabels {
+		index := strings.Index(line, label)
+		if index < 0 {
+			continue
+		}
+		colon := strings.Index(line[index:], ":")
+		if colon < 0 {
+			continue
+		}
+		return line[:index+colon+1] + " ****"
+	}
+	return line
+}
+
 type lineRedactingWriter struct {
 	dst     io.Writer
 	secrets []string
@@ -60,6 +85,7 @@ func (w *lineRedactingWriter) Write(p []byte) (int, error) {
 		}
 		line := string(w.buf[:i])
 		w.buf = w.buf[i+1:]
+		line = redactStartupCredential(line)
 		for _, secret := range w.secrets {
 			line = strings.ReplaceAll(line, secret, "****")
 		}
