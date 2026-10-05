@@ -207,7 +207,12 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.Contains(t, ephemeralTree, base64.StdEncoding.EncodeToString([]byte(secret)))
 	ephemeralStatefulSet, err := os.ReadFile(filepath.Join(ephemeralDestination, "base", "stateful-set.yaml"))
 	require.NoError(t, err)
-	require.Contains(t, string(ephemeralStatefulSet), "name: VAULT_DEV_ROOT_TOKEN_ID")
+	// The composition's token arrives as the access token the postStart hook
+	// scopes to the consumer policy, in this render as in a deployed one. No
+	// render carries the store's own root token.
+	require.Contains(t, string(ephemeralStatefulSet), "name: VAULT_ACCESS_TOKEN")
+	require.NotContains(t, string(ephemeralStatefulSet), "name: VAULT_DEV_ROOT_TOKEN_ID",
+		"the store's own root token is minted inside the container, never delivered to it")
 	require.Contains(t, string(ephemeralStatefulSet), "key: CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__TOKEN")
 
 	restrictedDestination := t.TempDir()

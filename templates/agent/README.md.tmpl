@@ -10,18 +10,80 @@ This service manages a HashiCorp Vault instance:
 | Key | Description |
 |-----|-------------|
 | `vault/address` | Vault HTTP(S) address |
-| `vault/token` | Token for authentication (absent when `vault/token-file` is set) |
+| `vault/token` | Token for authentication, scoped to the paths below (absent when `vault/token-file` is set) |
 | `vault/ca-file` | External instances only: path, in consumer pods, of the CA bundle that verifies `vault/address` |
 | `vault/token-file` | External instances only: path, in consumer pods, of a file holding a current Vault token |
+
+## What the token can reach
+
+Whichever Vault runs it, the token under `vault/token` is an orphan carrying one
+policy, `codefly-access`, and nothing else. It grants:
+
+| Path | Capabilities |
+|------|--------------|
+| `secret/data/*` | create, read, update, patch, delete |
+| `secret/metadata/*` | read, list, delete |
+| `secret/delete/*`, `secret/undelete/*`, `secret/destroy/*` | update |
+| `transit/encrypt/<transit-key>`, `transit/decrypt/…`, `transit/hmac/…`, `transit/verify/…`, `transit/rewrap/…` | update |
+| `transit/keys/<transit-key>` | read |
+
+Vault adds its own `default` policy, which grants a token only operations on
+itself and its own cubbyhole. Nothing else is granted, so the token cannot mount
+an engine, read or write a policy, mint a token, reach any other transit key, or
+create, rotate, retype or delete the transit key every ciphertext and HMAC
+depends on. Address KV v2 through `secret/data/<path>`, as the data path, not
+through a mount-level call.
+
+The token stays a static secret: it is issued with a ten-year lifetime, and the
+token store's maximum lease TTL is raised to match before it is created, because
+Vault caps a non-root token at that ceiling (768h by default) and a scoped token
+cannot renew itself. Raising the ceiling lengthens no existing token and grants
+no capability. Giving this credential a real rotation lifetime means consumers
+authenticating to Vault themselves through an auth method rather than presenting
+a delivered token — a change to what consumers receive, not to what it reaches.
+
+Rotating the token is an operator step. On a durable Vault the provisioning hook
+can only install a token while it still holds the initialization response's root
+token — that is, on the Vault's first start. Afterwards, create the replacement
+in Vault yourself (orphan, `codefly-access` policy, `ttl=87600h`) **before** the
+secret changes, using a root token generated from the recovery key material in
+`/vault/data/bootstrap/init.json`. A token the hook finds installed with a wider
+policy, or one it cannot install, stops the container with the reason rather than
+being served.
 
 ## Which Vault a deployment gets
 
 | Where | Vault |
 |-------|-------|
 | `codefly run` (Docker or Nix) | A local, file-backed server whose state survives restarts (unchanged) |
-| Ephemeral local apply | `vault server -dev`, in memory. A restart mints a new transit key, so everything encrypted before it is unreadable. Local only. |
+| Ephemeral local apply | `vault server -dev`, in memory. A restart mints a new transit key, so everything encrypted before it is unreadable. Local only — see below. |
 | Restricted (deployed) render, environment not bound | A durable server: integrated raft storage on a persistent volume, auto-unsealed by the environment's seal |
 | Any deployment, environment bound in `external-instances` | None. Consumers use the external Vault |
+
+### The in-memory Vault is local-only, and enforced to be
+
+An in-memory store is a local-development shape: a restart loses every transit
+key it held, so anything sealed under them becomes unreadable. Two guards keep it
+there.
+
+The render refuses to emit one outside the ephemeral local-apply profile. It is
+an allow-list, so a deploy profile this agent does not recognise as local fails
+instead of inheriting the in-memory server by default.
+
+The container refuses to start one. The local-apply render is the only render
+that declares `VAULT_CODEFLY_RENDER_PROFILE=ephemeral-local-apply`, and
+`provision/dev.sh` — the container's command — exits 78 naming what it found
+whenever that declaration is absent or names another context. A StatefulSet
+lifted out of a local render into a deployed composition therefore never serves.
+
+That script also keeps the server's start-up credentials out of the workload's
+output. `vault server -dev` announces its unseal key and its root token on
+standard output; the script discards that stream and keeps standard error, which
+carries the configuration block, the start marker and the whole log stream. The
+in-memory server's root token is minted inside the container, kept in its tmpfs
+at mode 0600, and dies with it: no manifest carries it and no consumer receives
+it. The token consumers receive arrives as `VAULT_ACCESS_TOKEN` and is installed
+by the postStart hook under `codefly-access`, exactly as in a deployed render.
 
 ### External instances
 
@@ -45,4 +107,6 @@ The environment supplies, as this service's non-secret configuration:
 - `VAULT_SEAL_TYPE` and that seal's own variables. For GCP Cloud KMS: `VAULT_SEAL_TYPE=gcpckms`, `GOOGLE_PROJECT`, `GOOGLE_REGION`, `VAULT_GCPCKMS_SEAL_KEY_RING`, `VAULT_GCPCKMS_SEAL_CRYPTO_KEY`. Credentials come from the pod's workload identity. The server refuses to start without an auto-unseal seal.
 - Optionally `VAULT_RECOVERY_PGP_KEY`, a base64 OpenPGP public key. The recovery key is then written only in encrypted form.
 
-The container's postStart hook initializes the server once, installs the `vault/token` secret as an orphan root-policy token, and mounts KV v2 at `secret/` and transit with `transit-key`. It then revokes the initial root token. The recovery key stays in `/vault/data/bootstrap/init.json` on the data volume. Every step is idempotent, and an existing transit key is never rotated. This service does not seed any secret a consumer reads. Rotating the access token is an operator step: create the new token with the current one before the secret changes.
+The container's postStart hook initializes the server once, mounts KV v2 at `secret/` and transit with `transit-key`, writes the `codefly-access` policy, and installs the `vault/token` secret as an orphan carrying only that policy. Every privileged step runs under the initialization response's root token, which the hook then revokes and scrubs from the record; the recovery key material stays in `/vault/data/bootstrap/init.json` on the data volume. A later start holds no root token and needs none: it verifies that the access token reaches the configured transit key and does nothing else. Every step is idempotent, and an existing transit key is never rotated. This service does not seed any secret a consumer reads.
+
+Changing `transit-key` on an already-provisioned durable Vault is an operator step for the same reason rotation is: the hook can no longer write the policy or create the key. It reports that the access token cannot read the key rather than letting every consumer's `encrypt` answer 403.

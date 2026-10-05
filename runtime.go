@@ -29,7 +29,14 @@ type Runtime struct {
 	runnerEnvironment *dockerrun.DockerEnvironment
 	vaultPort         uint16
 	vaultAddress      string
-	vaultToken        string
+	// vaultToken is the token consumers are published: an orphan scoped to
+	// consumerPolicyName, which grants no mount and no policy.
+	vaultToken string
+	// vaultAdminToken is local custody — the agent's own administrative
+	// credential for this server. Mounting transit and seeding the signing key
+	// are privileged, so they run under this token, never under the token a
+	// consumer holds. It is never published or logged.
+	vaultAdminToken string
 
 	// nixRuntime is set instead of runnerEnvironment when the caller requests
 	// RuntimeContextNix — vault runs natively from a nix-provisioned binary.
@@ -170,7 +177,12 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		}
 	}
 
-	vaultToken, err = state.bootstrap(ctx, vaultAddress, vaultToken)
+	transitKey, err := s.transitKeyName()
+	if err != nil {
+		_ = s.teardown(ctx)
+		return s.Runtime.InitError(err)
+	}
+	vaultToken, adminToken, err := state.bootstrap(ctx, vaultAddress, vaultToken, transitKey)
 	if err != nil {
 		_ = s.teardown(ctx)
 		return s.Runtime.InitError(err)
@@ -181,6 +193,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 	}
 	ready = true
 	s.vaultToken = vaultToken
+	s.vaultAdminToken = adminToken
 	s.vaultAddress = vaultAddress
 	s.Runtime.Lock()
 	s.Runtime.RuntimeConfigurations = runtimeConfigurations
@@ -293,7 +306,10 @@ func (s *Runtime) vaultRequest(ctx context.Context, method, path, body string) e
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Vault-Token", s.vaultToken)
+	// Mounting an engine, creating a transit key and writing the signing key
+	// are the agent's own privileged seeding, not a consumer's traffic, so they
+	// present local custody's administrative token.
+	req.Header.Set("X-Vault-Token", s.vaultAdminToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)

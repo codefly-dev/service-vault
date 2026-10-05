@@ -45,6 +45,14 @@ type deploymentTemplateParameters struct {
 	// ServerCommand is the durable container's command (provision/server.sh),
 	// as a JSON array. Set only for a durable render.
 	ServerCommand string
+	// DevCommand is the in-memory container's command (provision/dev.sh), as a
+	// JSON array. Set only for the ephemeral local-apply render.
+	DevCommand string
+	// RenderProfile is what that container is told it was rendered for. Only
+	// the local-apply render sets it, and provision/dev.sh refuses to start
+	// without it, so an in-memory store cannot come up in a deployed runtime
+	// context.
+	RenderProfile string
 	// ServiceName is the service's own name, declared on the durable container
 	// as CODEFLY__SERVICE so the environment's per-service configuration (the
 	// seal) is projected into it.
@@ -139,7 +147,8 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	if err != nil {
 		return s.Builder.DeployError(err)
 	}
-	restricted := services.IsRestrictedOutputProfile(req.GetDeployment().GetKubernetes().GetProfile())
+	profile := req.GetDeployment().GetKubernetes().GetProfile()
+	restricted := services.IsRestrictedOutputProfile(profile)
 	parameters := &deploymentTemplateParameters{ServiceName: s.Identity.Name}
 	switch {
 	case binding != nil:
@@ -149,6 +158,23 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		if parameters.ServerCommand, err = serverCommand(); err != nil {
 			return s.Builder.DeployError(err)
 		}
+	case profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1:
+		// The one render that may run an in-memory store. An allow-list, not
+		// "whatever is left": a store a restart empties is a local-development
+		// shape, so a profile this agent does not recognise as local must fail
+		// closed rather than inherit the dev server by default.
+		parameters.RenderProfile = localApplyRenderProfile
+		if parameters.DevCommand, err = devCommand(); err != nil {
+			return s.Builder.DeployError(err)
+		}
+	case profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED:
+		// Not a runtime context at all. Core's own deployment validation
+		// refuses an unspecified profile before anything is rendered; let it
+		// name that rather than report a store shape.
+	default:
+		return s.Builder.DeployError(fmt.Errorf(
+			"an in-memory Vault is a local-development shape and is not rendered for %s: a deployed runtime context runs the durable server on a persistent volume (a restricted profile) or binds a Vault operated outside this service (external-instances)",
+			profile))
 	}
 	if !parameters.External {
 		key, err := s.transitKeyName()

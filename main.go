@@ -25,15 +25,17 @@ var requirements = builders.NewDependencies(agent.Name,
 	builders.NewDependency("service.codefly.yaml"),
 )
 
-// vaultTokenEnvironmentVariable carries the token into the in-memory dev server
-// of the ephemeral local-apply render, which boots with it as its root token.
+// vaultTokenEnvironmentVariable is how `vault server -dev` is told its own root
+// token. No render carries it: provision/dev.sh mints that token inside the
+// in-memory container and exports it to the server process there, so no
+// consumer and no manifest ever holds the store's root credential.
 const vaultTokenEnvironmentVariable = "VAULT_DEV_ROOT_TOKEN_ID"
 
 // vaultAccessTokenEnvironmentVariable carries the composition-supplied token
-// into the durable server of a restricted render, where provision/provision.sh
-// installs it. A durable server has no dev root token, so the variable is
-// deliberately not VAULT_DEV_ROOT_TOKEN_ID (nor VAULT_TOKEN, which the vault
-// CLI would pick up implicitly).
+// into the Vault container of either render, where provision/provision.sh
+// installs it as an orphan scoped to consumerPolicyName. It is deliberately
+// not VAULT_DEV_ROOT_TOKEN_ID — it is not the server's root token — nor
+// VAULT_TOKEN, which the vault CLI would pick up implicitly.
 const vaultAccessTokenEnvironmentVariable = "VAULT_ACCESS_TOKEN"
 
 type Settings struct {

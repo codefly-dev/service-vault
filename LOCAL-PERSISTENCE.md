@@ -9,8 +9,9 @@ local-apply render still runs the in-memory dev server.
 State lives under Codefly's `runtime-cache/<workspace-service-identity>/vault-state`:
 
 - `vault-data/` contains the file backend.
-- `credentials.json` contains local root/access credentials and the unseal key,
-  written with mode 0600 inside a mode-0700 directory.
+- `credentials.json` contains local custody — the root token and the unseal key —
+  and the access token published to consumers, written with mode 0600 inside a
+  mode-0700 directory.
 - `server.json` contains the local listener/storage configuration, without secrets.
 - `runtime.lock` prevents concurrent agents from starting the same storage directory.
 
@@ -21,10 +22,32 @@ than creating replacement keys. First initialization has an unavoidable failure
 window before the returned custody is persisted; recovery fails closed if that
 response or file is lost. Back up both before intentional cleanup.
 
-No-configuration startup reuses the saved access token. An explicitly configured
-local token is installed using Vault's token API after initialization/unseal.
-Initialization and unseal bodies never enter logs or process arguments. Local custody
-is a development convenience and is not the production unseal design.
+The root token and the unseal key stay in custody: the agent uses them to unseal
+the server, mount KV v2 and transit, write the `codefly-access` policy and seed
+the signing key, and never publishes or logs either. What consumers receive is a
+separate orphan token carrying only `codefly-access`, which grants the paths a
+consumer reads and writes — KV v2 under `secret/` and the configured transit
+key's operations — and nothing under `sys/` or `auth/`. The published token
+cannot mount an engine, read a policy, mint a token or touch another transit
+key; the agent README lists the policy in full.
+
+The published token is issued with a ten-year lifetime, and the local token
+store's maximum lease TTL is raised to match before it is created: Vault caps a
+non-root token at that ceiling and a scoped token cannot renew itself, so the
+token stays the static secret consumers already hold.
+
+No-configuration startup reuses the saved access token when Vault still holds it
+with that policy. An explicitly configured local token is installed under the
+same policy using Vault's token API after initialization/unseal. Custody carried
+over from a build that published the root token directly is migrated on the next
+start: the policy is written, a scoped token is minted and published, and a
+previously published token that grants more is revoked first. The root token in
+custody is never revoked — it is the administrative credential, not a published
+one. An access token Vault rejects still fails closed rather than being replaced
+silently. Initialization and unseal bodies never enter logs or process arguments.
+The policy is rewritten on every start, so changing `transit-key` locally needs
+no further step. Local custody is a development convenience and is not the
+production unseal design.
 
 Existing dev-mode ciphertext cannot be migrated after its old in-memory transit key
 has already been lost. Reconnect affected sources once using a fresh credential.

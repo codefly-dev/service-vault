@@ -203,6 +203,13 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	})
 	require.Len(t, firstInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
 	require.Equal(t, configuredToken, firstToken)
+	// The configured token is installed scoped, not as the server's root token:
+	// what is published is never local custody's administrative credential, and
+	// it cannot mount an engine the way the agent's own seeding does.
+	require.NotEmpty(t, runtime.vaultAdminToken)
+	require.NotEqual(t, runtime.vaultAdminToken, firstToken)
+	require.Error(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/sys/mounts/another", firstToken,
+		map[string]string{"type": "kv"}, nil), "the published token mounted a secrets engine")
 
 	// Write through the consumer APIs before stopping. Token equality alone
 	// cannot prove that encryption keys or KV contents were retained.
