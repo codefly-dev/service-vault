@@ -171,7 +171,7 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		Parameters:           parameters,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
 			restricted := services.IsRestrictedOutputProfile(deployment.Profile)
-			// Vault's HTTP endpoint is visibility: module, so every deploy profile
+			// Vault's HTTP endpoint is visibility: internal, so every deploy profile
 			// receives a container-only mapping (a non-DNS internal endpoint has no
 			// public instance) and its consumers reach it in-cluster. Resolve the
 			// container Service address for both the restricted render and local
@@ -311,7 +311,8 @@ func (s *Builder) CreateEndpoints(ctx context.Context) error {
 		return s.Wool.Wrapf(err, "cannot load http api")
 	}
 	endpoint := s.BaseEndpoint(standards.HTTP)
-	endpoint.Visibility = resources.VisibilityModule
+	endpoint.Visibility = resources.VisibilityInternal
+	endpoint.AllowModules = []string{"*"}
 	s.HttpEndpoint, err = resources.NewAPI(ctx, endpoint, resources.ToHTTPAPI(httpAPI))
 	if err != nil {
 		return s.Wool.Wrapf(err, "cannot create http endpoint")

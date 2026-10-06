@@ -168,7 +168,7 @@ func TestDeploymentProfiles(t *testing.T) {
 		Service: identity.Name,
 		Api:     "http",
 	}
-	// A visibility: module endpoint has no DNS, so the remote network manager
+	// A visibility: internal endpoint has no DNS, so the remote network manager
 	// emits a container-only mapping in every deploy profile — no public instance.
 	networkMappings := []*basev0.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
@@ -454,7 +454,7 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 	}
 }
 
-// A visibility: module endpoint has no public instance, so the remote network
+// A visibility: internal endpoint has no public instance, so the remote network
 // manager emits a container-only mapping. The restricted profile must resolve
 // that container instance and advertise its in-cluster Service address, not
 // demand a public one that will never exist.
