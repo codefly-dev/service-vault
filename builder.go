@@ -139,7 +139,7 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 	if err != nil {
 		return s.Builder.DeployError(err)
 	}
-	restricted := services.IsRestrictedOutputProfile(req.GetDeployment().GetKubernetes().GetProfile())
+	restricted := restrictedOutput(req.GetDeployment().GetKubernetes().GetProfile())
 	parameters := &deploymentTemplateParameters{ServiceName: s.Identity.Name}
 	switch {
 	case binding != nil:
@@ -170,7 +170,7 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		Templates:            deploymentFS,
 		Parameters:           parameters,
 		Prepare: func(ctx context.Context, deployment *services.KustomizeDeploymentContext) error {
-			restricted := services.IsRestrictedOutputProfile(deployment.Profile)
+			restricted := restrictedOutput(deployment.Profile)
 			// Vault's HTTP endpoint is visibility: module, so every deploy profile
 			// receives a container-only mapping (a non-DNS internal endpoint has no
 			// public instance) and its consumers reach it in-cluster. Resolve the
@@ -305,13 +305,33 @@ func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*bu
 	return s.Builder.CreateResponse(ctx, s.Settings)
 }
 
+// restrictedOutput reports whether the deployment selects the restricted,
+// portable output contract. It replaces services.IsRestrictedOutputProfile,
+// retired in favour of a parsed profile: an unknown or unselected profile is
+// now an ERROR rather than silently "not restricted". It is read as RESTRICTED
+// here, because the other direction would hand a restricted render the secrets
+// it exists to refuse -- and this agent holds the vault's own credentials.
+func restrictedOutput(profile builderv0.KubernetesOutputProfile) bool {
+	parsed, err := services.ParseOutputProfile(profile)
+	if err != nil {
+		return true
+	}
+	return parsed.Restricted()
+}
+
 func (s *Builder) CreateEndpoints(ctx context.Context) error {
 	httpAPI, err := resources.LoadHTTPAPI(ctx)
 	if err != nil {
 		return s.Wool.Wrapf(err, "cannot load http api")
 	}
 	endpoint := s.BaseEndpoint(standards.HTTP)
-	endpoint.Visibility = resources.VisibilityModule
+	// PRIVATE, replacing the retired `module` spelling, and deliberately the
+	// tighter of the two readings: the host module's interface exports
+	// accounts and auth-gateway, never vault, and the only consumer is
+	// saas/accounts in the same module. `internal` would grant reach across
+	// module boundaries that nothing asks for -- on the service holding the
+	// JWT signing key.
+	endpoint.Visibility = resources.VisibilityPrivate
 	s.HttpEndpoint, err = resources.NewAPI(ctx, endpoint, resources.ToHTTPAPI(httpAPI))
 	if err != nil {
 		return s.Wool.Wrapf(err, "cannot create http endpoint")
