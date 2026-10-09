@@ -3,7 +3,7 @@
 ARG VAULT_COMMIT=7193f9a48ff6093ca61b3b627a8671e770428ba6
 ARG VAULT_VERSION=2.0.3
 
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine3.24@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS source
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS source
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 RUN apk add --no-cache git \
@@ -21,7 +21,7 @@ RUN corepack enable \
     && pnpm rebuild node-sass \
     && pnpm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine3.24@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 RUN apk add --no-cache bash git
@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
        go build -buildvcs=false -tags "vault ui" \
        -ldflags "-X github.com/hashicorp/vault/version.GitCommit=${VAULT_COMMIT}+codefly.2 -X github.com/hashicorp/vault/version.BuildDate=${build_date} -X github.com/hashicorp/vault/version.Version=${VAULT_VERSION}" \
        -o bin/vault .
-RUN go version -m bin/vault | grep -F "go1.26.6" \
+RUN go version -m bin/vault | grep -F "go1.26.9" \
     && go version -m bin/vault | grep -F "google.golang.org/grpc" | grep -F "v1.83.2" \
     && go version -m bin/vault | grep -F "github.com/apache/thrift" | grep -F "v0.24.0" \
     && go version -m bin/vault | grep -F "golang.org/x/crypto" | grep -F "v0.55.0" \
