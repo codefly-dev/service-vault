@@ -1,7 +1,7 @@
 publisher: codefly.dev
 kind: codefly:service
 name: vault
-version: 0.0.39
+version: 0.0.40
 source:
   directory: .
   agent: codefly.dev/go:0.0.56
