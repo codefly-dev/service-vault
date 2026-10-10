@@ -110,15 +110,9 @@ spec:
               value: "true"
 {{- end }}
 {{- if .Deployment.Parameters.ProvisionCommand }}
-{{- if .Deployment.Parameters.Durable }}
-          # Initializes the server once, installs the composition-supplied
-          # access token, and makes sure KV v2 at secret/ and the transit
-          # engine and key exist (provision/provision.sh, durable mode). It
-          # runs on every start and is idempotent: existing state, above all an
-          # existing transit key, is never rewritten. The container does not
-          # reach Running until it succeeds; a failed hook restarts the
-          # container.
-{{- else }}
+          # The local dev render only: a durable render provisions from its own
+          # command (provision/server.sh), because a cell's execution admission
+          # refuses an exec hook.
           # Consumers encrypt and HMAC through transit/ (the configured key), and
           # `vault server -dev` starts with no transit engine. The hook
           # provisions it over loopback (provision/provision.sh, dev mode) on
@@ -126,7 +120,6 @@ spec:
           # restart therefore mints a NEW key: everything encrypted or HMACed
           # before it is unreadable. That is acceptable only for this
           # disposable local render.
-{{- end }}
           lifecycle:
             postStart:
               exec:
@@ -153,8 +146,8 @@ spec:
           #   501 — not initialized
           #   503 — sealed
           # Startup and liveness only ask whether the process answers: a
-          # durable server is uninitialized until its first postStart hook
-          # completes, and sealed while its seal is unreachable — restarting it
+          # durable server is uninitialized until its own command has
+          # provisioned it, and sealed while its seal is unreachable — restarting it
           # fixes neither. Readiness is strict: only an initialized, unsealed,
           # active server receives traffic.
           startupProbe:

@@ -158,13 +158,11 @@ func TestRestrictedRenderRunsADurableVault(t *testing.T) {
 			container := renderedVaultContainer(t, destination)
 			require.Equal(t, "vault", container.Name)
 			require.Equal(t,
-				[]string{"/usr/bin/dumb-init", "--", "/bin/sh", "-c", serverScript, "vault-server"},
-				container.Command, "the durable server script is the container's command")
+				[]string{"/usr/bin/dumb-init", "--", "/bin/sh", "-c", serverScript, "vault-server", provisionScript, test.want},
+				container.Command, "the durable server script is the container's command; it provisions with the embedded script verbatim, key name as $2")
 			require.Empty(t, container.Args, "no `server -dev` arguments")
-			require.Equal(t,
-				[]string{"/bin/sh", "-c", provisionScript, "vault-provision", "durable", test.want},
-				container.Lifecycle.PostStart.Exec.Command,
-				"the hook runs the embedded script verbatim, durable mode, key name as $2")
+			require.Empty(t, container.Lifecycle.PostStart.Exec.Command,
+				"no exec hook: a cell's execution admission refuses one, so the server's own command provisions")
 
 			// Storage: one claim, mounted where raft and the init record live,
 			// on the environment's default StorageClass, retained when the
