@@ -27,9 +27,10 @@ const (
 // provisionScript provisions, in a deployed Vault, the state the local runtime
 // seeds (Runtime.enableTransit and localVaultState.bootstrap): in durable mode
 // initialization, the composition-supplied access token and KV v2 at secret/;
-// in both modes the transit engine at transit/ and the configured key. The
-// deployment renders it as the vault container's postStart hook, so it runs on
-// every start of the Vault process.
+// in both modes the transit engine at transit/ and the configured key. It runs
+// on every start of the Vault process: in durable mode from the container's
+// own command (provision/server.sh), because a cell's execution admission
+// refuses an exec hook; in the local dev render as its postStart hook.
 //
 //go:embed provision/provision.sh
 var provisionScript string
@@ -64,11 +65,14 @@ func provisionCommand(mode provisionMode, key string) (string, error) {
 	return execCommand("/bin/sh", "-c", provisionScript, "vault-provision", string(mode), key)
 }
 
-// serverCommand renders the durable container's command. dumb-init stays PID 1,
-// as under the image's own entrypoint, so signals reach vault and zombies are
-// reaped.
-func serverCommand() (string, error) {
-	return execCommand("/usr/bin/dumb-init", "--", "/bin/sh", "-c", serverScript, "vault-server")
+// serverCommand renders the durable container's command: provision/server.sh,
+// which starts the server and provisions it with provision/provision.sh in
+// durable mode. The provisioning script and the key name reach it as its
+// positional $1 and $2, so the configured value is data, not script text.
+// dumb-init stays PID 1, as under the image's own entrypoint, so signals reach
+// vault and zombies are reaped.
+func serverCommand(key string) (string, error) {
+	return execCommand("/usr/bin/dumb-init", "--", "/bin/sh", "-c", serverScript, "vault-server", provisionScript, key)
 }
 
 // execCommand renders an exec argv as a JSON array, which is a valid YAML flow

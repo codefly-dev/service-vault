@@ -1,8 +1,16 @@
 #!/bin/sh
 # Starts the durable Vault server a restricted (deployed) render runs: integrated
 # raft storage on the pod's persistent volume, auto-unsealed by the seal the
-# environment supplies. It is the container's command; provision/provision.sh
-# (durable mode) initializes the server once and provisions it on every start.
+# environment supplies. It is the container's command, and it provisions the
+# server it started: provision/provision.sh (durable mode, passed as $1 with the
+# transit key name as $2) initializes it once and provisions it on every start.
+#
+# Provisioning runs here, not as a postStart hook: a cell's execution admission
+# refuses any container with an exec probe or hook (a command of the delivering
+# party's choosing, run inside a pod that already holds the workload identity),
+# so the start-up work lives in the container's own command. A provisioning
+# failure stops the server and exits non-zero, so the container restarts and
+# the next start provisions again — what a failed hook did.
 #
 # The seal is environment configuration, never part of this agent's render: the
 # composition declares it as the vault service's non-secret configuration
@@ -53,4 +61,21 @@ disable_mlock = true
 ui            = false
 EOF
 
-exec vault server -config="$config"
+provision="$1"
+key="$2"
+
+vault server -config="$config" &
+server=$!
+# dumb-init forwards a termination signal to the whole process group, so the
+# server receives it too; wait for it to shut down rather than leave it to be
+# killed when this shell exits.
+trap 'wait "$server"; exit $?' TERM INT
+
+if ! /bin/sh -c "$provision" vault-provision durable "$key"; then
+	echo "vault: provisioning failed; stopping the server so the container restarts and provisions again" >&2
+	kill -TERM "$server" 2>/dev/null || true
+	wait "$server" || true
+	exit 1
+fi
+echo "vault: provisioned"
+wait "$server"

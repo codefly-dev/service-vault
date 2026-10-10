@@ -73,8 +73,8 @@ func TestDurableProvisioningRefusesBadInputs(t *testing.T) {
 }
 
 // durableHarness runs the pinned image exactly as the restricted render does:
-// the rendered container command on a read-only root filesystem with a
-// persistent data volume, and the rendered postStart hook executed inside it.
+// the rendered container command — which starts the server and provisions it —
+// on a read-only root filesystem with a persistent data volume.
 // The seal is a transit seal served by a second, throwaway Vault — the local
 // stand-in for the cloud KMS an environment supplies (gcpckms on GCP), passed
 // the way the environment passes it: as environment variables.
@@ -84,7 +84,6 @@ type durableHarness struct {
 	suffix  string
 	network string
 	server  []string
-	hook    []string
 }
 
 func newDurableHarness(t *testing.T) *durableHarness {
@@ -93,7 +92,7 @@ func newDurableHarness(t *testing.T) *durableHarness {
 	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	container := renderedVaultContainer(t, destination)
 	require.NotEmpty(t, container.Command)
-	require.NotEmpty(t, container.Lifecycle.PostStart.Exec.Command)
+	require.Empty(t, container.Lifecycle.PostStart.Exec.Command, "the server's own command provisions; no exec hook")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	t.Cleanup(cancel)
@@ -102,7 +101,7 @@ func newDurableHarness(t *testing.T) *durableHarness {
 	require.NoError(t, err)
 	h := &durableHarness{
 		t: t, ctx: ctx, suffix: hex.EncodeToString(suffix),
-		server: container.Command, hook: container.Lifecycle.PostStart.Exec.Command,
+		server: container.Command,
 	}
 	h.network = "vault-durable-" + h.suffix
 	h.docker("network", "create", h.network)
@@ -188,9 +187,46 @@ func (h *durableHarness) start(volume, accessToken string, extraEnv ...string) (
 	return name, "http://" + h.docker("port", name, "8200/tcp")
 }
 
-// provision runs the rendered hook in the container, as the kubelet does.
+// provision waits for the container's own command to finish provisioning the
+// server it started: success is its "vault: provisioned" line with the server
+// still running; failure is the container exiting. It returns the provisioning
+// lines of the container's log, which is what a hook's output used to be.
 func (h *durableHarness) provision(container string) (string, error) {
-	return h.try(append([]string{"exec", container}, h.hook...)...)
+	h.t.Helper()
+	for {
+		logs, _ := h.try("logs", container)
+		state := strings.TrimSpace(h.docker("inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", container))
+		lines := provisioningLines(logs)
+		switch {
+		case strings.Contains(logs, "vault: provisioned"):
+			return lines, nil
+		case strings.HasPrefix(state, "false"):
+			return lines, fmt.Errorf("the container exited before provisioning (state %s)", state)
+		}
+		select {
+		case <-h.ctx.Done():
+			return lines, h.ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// reprovision runs the provisioning script again against the running server,
+// as the next start of the process would: it must find nothing to do.
+func (h *durableHarness) reprovision(container string) (string, error) {
+	return h.try("exec", container, "/bin/sh", "-c", provisionScript, "vault-provision", "durable", "api-keys")
+}
+
+// provisioningLines keeps the lines the provisioning script and the server
+// script print about provisioning, leaving out the server's own log.
+func provisioningLines(logs string) string {
+	var kept []string
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "vault provisioning:") || strings.HasPrefix(line, "vault: ") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 func (h *durableHarness) stop(container string) {
@@ -269,7 +305,7 @@ func TestDurableVaultSurvivesRestart(t *testing.T) {
 
 	// Twice more on the same process: nothing to do.
 	for range 2 {
-		out, err = h.provision(first)
+		out, err = h.reprovision(first)
 		require.NoError(t, err, out)
 		require.Equal(t, "vault provisioning: transit engine and key \"api-keys\" ready", strings.TrimSpace(out))
 	}
@@ -279,7 +315,7 @@ func TestDurableVaultSurvivesRestart(t *testing.T) {
 	second, address := h.start(volume, token)
 	out, err = h.provision(second)
 	require.NoError(t, err, out)
-	require.Equal(t, "vault provisioning: transit engine and key \"api-keys\" ready", strings.TrimSpace(out),
+	require.Equal(t, "vault provisioning: transit engine and key \"api-keys\" ready\nvault: provisioned", strings.TrimSpace(out),
 		"a restarted Vault unseals itself and needs no initialization, token or key")
 
 	status, decrypted := h.call(address, token, http.MethodPost, "/v1/transit/decrypt/api-keys", fmt.Sprintf(`{"ciphertext":%q}`, encrypted["ciphertext"]))
@@ -316,8 +352,12 @@ func TestDurableVaultRefusesToInitializeOverAnInitRecord(t *testing.T) {
 	out, err := h.provision(container)
 	require.Error(t, err)
 	require.Contains(t, out, "vault storage is uninitialized but /vault/data/bootstrap/init.json exists")
-	raw := h.docker("exec", container, "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/init")
-	require.JSONEq(t, `{"initialized":false}`, raw, "the server was left uninitialized")
+	require.Contains(t, out, "vault: provisioning failed; stopping the server")
+	// Initialization writes its response to the init record before anything
+	// else, so a record still holding exactly what was planted is a server
+	// that was never initialized.
+	planted := h.docker("run", "--rm", "-u", "100:1000", "-v", volume+":/vault/data", "--entrypoint", "cat", image.FullName(), "/vault/data/bootstrap/init.json")
+	require.JSONEq(t, `{"root_token": ""}`, planted, "the server was left uninitialized")
 }
 
 // With VAULT_RECOVERY_PGP_KEY the recovery key is only ever written encrypted

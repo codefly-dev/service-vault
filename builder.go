@@ -38,7 +38,7 @@ type deploymentTemplateParameters struct {
 	// the Service publishes it and folds it onto 8200, the port the container
 	// listens on. Zero leaves the template on 8200.
 	ServicePort uint32
-	// ProvisionCommand is the vault container's postStart exec command, as a
+	// ProvisionCommand is the local dev render's postStart exec command, as a
 	// JSON array (a valid YAML flow sequence): provision/provision.sh run with
 	// its mode and the configured transit key name. Empty renders no hook.
 	ProvisionCommand string
@@ -146,20 +146,19 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		parameters.External = true
 	case restricted:
 		parameters.Durable = true
-		if parameters.ServerCommand, err = serverCommand(); err != nil {
-			return s.Builder.DeployError(err)
-		}
 	}
 	if !parameters.External {
 		key, err := s.transitKeyName()
 		if err != nil {
 			return s.Builder.DeployError(err)
 		}
-		mode := provisionModeDev
 		if parameters.Durable {
-			mode = provisionModeDurable
-		}
-		if parameters.ProvisionCommand, err = provisionCommand(mode, key); err != nil {
+			// The durable server provisions itself from its own command: a
+			// cell's execution admission refuses an exec hook.
+			if parameters.ServerCommand, err = serverCommand(key); err != nil {
+				return s.Builder.DeployError(err)
+			}
+		} else if parameters.ProvisionCommand, err = provisionCommand(provisionModeDev, key); err != nil {
 			return s.Builder.DeployError(err)
 		}
 	}
