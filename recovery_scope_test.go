@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		scope, err := dockerrun.NewContainerRecoveryScope(dir, dir, "service-vault-tests")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
