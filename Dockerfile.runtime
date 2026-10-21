@@ -3,7 +3,7 @@
 ARG VAULT_COMMIT=7193f9a48ff6093ca61b3b627a8671e770428ba6
 ARG VAULT_VERSION=2.0.3
 
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS source
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS source
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 RUN apk add --no-cache git \
@@ -21,7 +21,7 @@ RUN corepack enable \
     && pnpm rebuild node-sass \
     && pnpm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 RUN apk add --no-cache bash git
