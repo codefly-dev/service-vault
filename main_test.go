@@ -99,9 +99,10 @@ func TestVaultImageSBOM(t *testing.T) {
 	// Verify the actual binary inventory contains the fixes, even if a scanner
 	// database later drops an advisory or stops recognizing a Go dependency.
 	for module, version := range map[string]string{
-		"github.com/apache/thrift": "v0.24.0",
-		"golang.org/x/net":         "v0.60.0",
-		"google.golang.org/grpc":   "v1.83.2",
+		"github.com/apache/thrift":      "v0.24.0",
+		"github.com/klauspost/compress": "v1.18.7",
+		"golang.org/x/net":              "v0.60.0",
+		"google.golang.org/grpc":        "v1.83.2",
 	} {
 		found := false
 		for _, component := range response.GetBom().GetComponents() {
