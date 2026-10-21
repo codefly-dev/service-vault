@@ -28,12 +28,13 @@ RUN apk add --no-cache bash git
 COPY --from=ui /src /src
 WORKDIR /src
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go get google.golang.org/grpc@v1.83.2 github.com/apache/thrift@v0.24.0 golang.org/x/crypto@v0.57.0 golang.org/x/text@v0.42.0 golang.org/x/net@v0.60.0 \
+    go get google.golang.org/grpc@v1.83.2 github.com/apache/thrift@v0.24.0 golang.org/x/crypto@v0.57.0 golang.org/x/text@v0.42.0 golang.org/x/net@v0.60.0 github.com/klauspost/compress@v1.18.7 \
     && go mod download \
     && test "$(go list -m -f '{{.Version}}' google.golang.org/grpc)" = "v1.83.2" \
     && test "$(go list -m -f '{{.Version}}' github.com/apache/thrift)" = "v0.24.0" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/crypto)" = "v0.57.0" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/text)" = "v0.42.0" \
+    && test "$(go list -m -f '{{.Version}}' github.com/klauspost/compress)" = "v1.18.7" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/net)" = "v0.60.0"
 ARG TARGETARCH
 ARG TARGETOS
