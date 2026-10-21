@@ -50,8 +50,8 @@ type Settings struct {
 
 var image = &resources.DockerImage{
 	Name:   "ghcr.io/codefly-dev/service-vault-runtime",
-	Tag:    "runtime-v2.0.3-patched.13",
-	Digest: "sha256:86aa9162af5494eb7bdd1173773037bb7b4dc3632bdf316b27eb345ca2d47355",
+	Tag:    "runtime-v2.0.3-patched.16",
+	Digest: "sha256:418b04bcfd26211ca40580c8a670cbe55f21e07a81b221f44eded37e8e7b8aa4",
 }
 
 type Service struct {
