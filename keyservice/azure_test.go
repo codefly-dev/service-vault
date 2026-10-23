@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -101,14 +102,17 @@ func (s *server) Do(req *http.Request) (*http.Response, error) {
 		if body.Algorithm != "A256GCM" {
 			s.t.Fatal("wrong encryption algorithm")
 		}
-		iv := decode(body.IV)
-		if len(iv) != gcm.NonceSize() {
-			s.t.Fatal("missing random GCM nonce")
+		if body.IV != "" {
+			s.t.Fatal("Managed HSM refuses a caller-supplied GCM nonce")
+		}
+		iv := make([]byte, gcm.NonceSize())
+		if _, err := rand.Read(iv); err != nil {
+			s.t.Fatal(err)
 		}
 		sealed := gcm.Seal(nil, iv, value, decode(body.AAD))
 		response["value"] = base64.RawURLEncoding.EncodeToString(sealed[:len(sealed)-16])
 		response["tag"] = base64.RawURLEncoding.EncodeToString(sealed[len(sealed)-16:])
-		response["iv"] = body.IV
+		response["iv"] = base64.RawURLEncoding.EncodeToString(iv)
 	case "decrypt":
 		if body.Algorithm != "A256GCM" {
 			s.t.Fatal("wrong decryption algorithm")

@@ -6,7 +6,6 @@ package keyservice
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -213,11 +212,9 @@ func (a *Azure) seal(ctx context.Context, key keyRef, purpose, plaintext string)
 	if purpose == "" || len(plaintext) > maxPlaintext || len(purpose) > 4096 {
 		return "", errors.New("invalid key-service purpose or plaintext size")
 	}
-	iv := make([]byte, 12)
-	if _, err := rand.Read(iv); err != nil {
-		return "", errors.New("cannot generate encryption nonce")
-	}
-	r, err := a.client.Encrypt(ctx, key.name, key.version, azkeys.KeyOperationParameters{Algorithm: ptr(azkeys.EncryptionAlgorithmA256GCM), Value: []byte(plaintext), AdditionalAuthenticatedData: []byte(purpose), IV: iv}, nil)
+	// Managed HSM owns GCM nonce generation. A caller-supplied IV is refused;
+	// retain the returned nonce with the authenticated ciphertext for Open.
+	r, err := a.client.Encrypt(ctx, key.name, key.version, azkeys.KeyOperationParameters{Algorithm: ptr(azkeys.EncryptionAlgorithmA256GCM), Value: []byte(plaintext), AdditionalAuthenticatedData: []byte(purpose)}, nil)
 	if err != nil {
 		return "", safeError(err)
 	}
