@@ -3,7 +3,7 @@
 ARG VAULT_COMMIT=7193f9a48ff6093ca61b3b627a8671e770428ba6
 ARG VAULT_VERSION=2.0.3
 
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS source
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS source
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 RUN apk add --no-cache git \
@@ -13,7 +13,7 @@ RUN apk add --no-cache git \
     && git -C /src checkout --detach FETCH_HEAD \
     && test "$(cat /src/version/VERSION)" = "${VAULT_VERSION}"
 
-FROM --platform=$BUILDPLATFORM node:20-alpine3.22@sha256:8f47899606d000b0704e992f927fe7335adcd0d6c98851600072fb6e14a13e60 AS ui
+FROM --platform=$BUILDPLATFORM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS ui
 COPY --from=source /src /src
 WORKDIR /src/ui
 RUN corepack enable \
@@ -21,7 +21,7 @@ RUN corepack enable \
     && pnpm rebuild node-sass \
     && pnpm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS builder
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 RUN apk add --no-cache bash git
@@ -53,7 +53,7 @@ RUN go version -m bin/vault | grep -F "go1.26.10" \
     && go version -m bin/vault | grep -F "golang.org/x/net" | grep -F "v0.60.0" \
     && go version -m bin/vault | grep -F "github.com/hashicorp/vault/version.Version=${VAULT_VERSION}"
 
-FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 ARG VAULT_COMMIT
 ARG VAULT_VERSION
 LABEL org.opencontainers.image.description="HashiCorp Vault runtime rebuilt with patched Go dependencies" \
