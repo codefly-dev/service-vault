@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -79,22 +79,22 @@ func (binding ExternalInstance) validate() error {
 // environment projects them, and — only without a token file — the token
 // capability (the value for the ephemeral profile, an empty secret the
 // promotion driver fills for a restricted one).
-func (s *Service) externalConnectionConfiguration(instance *basev0.NetworkInstance, binding *ExternalInstance, token *string) *basev0.Configuration {
-	values := []*basev0.ConfigurationValue{
+func (s *Service) externalConnectionConfiguration(instance *basev1.NetworkInstance, binding *ExternalInstance, token *string) *basev1.Configuration {
+	values := []*basev1.ConfigurationValue{
 		{Key: "address", Value: strings.TrimSuffix(binding.Address, "/")},
 	}
 	if binding.CAFile != "" {
-		values = append(values, &basev0.ConfigurationValue{Key: "ca-file", Value: binding.CAFile})
+		values = append(values, &basev1.ConfigurationValue{Key: "ca-file", Value: binding.CAFile})
 	}
 	if binding.TokenFile != "" {
-		values = append(values, &basev0.ConfigurationValue{Key: "token-file", Value: binding.TokenFile})
+		values = append(values, &basev1.ConfigurationValue{Key: "token-file", Value: binding.TokenFile})
 	} else if token != nil {
-		values = append(values, &basev0.ConfigurationValue{Key: "token", Value: *token, Secret: true})
+		values = append(values, &basev1.ConfigurationValue{Key: "token", Value: *token, Secret: true})
 	}
-	return &basev0.Configuration{
+	return &basev1.Configuration{
 		Origin:         s.Unique(),
 		RuntimeContext: resources.RuntimeContextFromInstance(instance),
-		Infos: []*basev0.ConfigurationInformation{
+		Infos: []*basev1.ConfigurationInformation{
 			{Name: "vault", ConfigurationValues: values},
 		},
 	}

@@ -9,8 +9,8 @@ import (
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/agents/services/upgrade"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
@@ -60,8 +60,8 @@ type deploymentTemplateParameters struct {
 // Without this answer core refuses the whole render of any environment that
 // mirrors a registry, because such an environment builds on a dedicated
 // builder and core verifies every agent before dispatching to it.
-func (s *Builder) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
-	return &builderv0.BuildCapabilitiesResponse{BuildxSelection: true}, nil
+func (s *Builder) BuildCapabilities(context.Context, *builderv1.BuildCapabilitiesRequest) (*builderv1.BuildCapabilitiesResponse, error) {
+	return &builderv1.BuildCapabilitiesResponse{BuildxSelection: true}, nil
 }
 
 func NewBuilder() *Builder {
@@ -70,14 +70,14 @@ func NewBuilder() *Builder {
 	}
 }
 
-func (s *Builder) Load(ctx context.Context, req *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+func (s *Builder) Load(ctx context.Context, req *builderv1.LoadRequest) (*builderv1.LoadResponse, error) {
 	defer s.Wool.Catch()
 
 	return s.Builder.LoadService(ctx, req, services.BuilderLoad{
 		Settings:         s.Settings,
 		Requirements:     requirements,
 		FactoryTemplates: factoryFS,
-		ResolveEndpoints: func(ctx context.Context, endpoints []*basev0.Endpoint) error {
+		ResolveEndpoints: func(ctx context.Context, endpoints []*basev1.Endpoint) error {
 			endpoint, err := resources.FindHTTPEndpoint(ctx, endpoints)
 			if err != nil {
 				return err
@@ -89,42 +89,42 @@ func (s *Builder) Load(ctx context.Context, req *builderv0.LoadRequest) (*builde
 	})
 }
 
-func (s *Builder) Init(ctx context.Context, req *builderv0.InitRequest) (*builderv0.InitResponse, error) {
+func (s *Builder) Init(ctx context.Context, req *builderv1.InitRequest) (*builderv1.InitResponse, error) {
 	defer s.Wool.Catch()
 	return s.Builder.InitResponse()
 }
 
-func (s *Builder) Update(ctx context.Context, req *builderv0.UpdateRequest) (*builderv0.UpdateResponse, error) {
+func (s *Builder) Update(ctx context.Context, req *builderv1.UpdateRequest) (*builderv1.UpdateResponse, error) {
 	defer s.Wool.Catch()
-	return &builderv0.UpdateResponse{}, nil
+	return &builderv1.UpdateResponse{}, nil
 }
 
-func (s *Builder) Sync(ctx context.Context, req *builderv0.SyncRequest) (*builderv0.SyncResponse, error) {
+func (s *Builder) Sync(ctx context.Context, req *builderv1.SyncRequest) (*builderv1.SyncResponse, error) {
 	defer s.Wool.Catch()
 	return s.Builder.SyncResponse()
 }
 
-func (s *Builder) Build(ctx context.Context, req *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (s *Builder) Build(ctx context.Context, req *builderv1.BuildRequest) (*builderv1.BuildResponse, error) {
 	defer s.Wool.Catch()
 	s.Wool.Debug("build: vault has no build artifacts")
 	return s.Builder.BuildResponse()
 }
 
 // Audit scans the vault image for vulnerabilities via trivy.
-func (s *Builder) Audit(ctx context.Context, req *builderv0.AuditRequest) (*builderv0.AuditResponse, error) {
+func (s *Builder) Audit(ctx context.Context, req *builderv1.AuditRequest) (*builderv1.AuditResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 	return s.Builder.AuditContainer(ctx, req, image.FullName())
 }
 
-func (s *Builder) SBOM(ctx context.Context, _ *builderv0.SBOMRequest) (*builderv0.SBOMResponse, error) {
+func (s *Builder) SBOM(ctx context.Context, _ *builderv1.SBOMRequest) (*builderv1.SBOMResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 	return s.Builder.SBOMContainer(ctx, image.FullName())
 }
 
 // Upgrade reports a tag bump from the current vault image.
-func (s *Builder) Upgrade(ctx context.Context, req *builderv0.UpgradeRequest) (*builderv0.UpgradeResponse, error) {
+func (s *Builder) Upgrade(ctx context.Context, req *builderv1.UpgradeRequest) (*builderv1.UpgradeResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 	res, err := upgrade.Docker(ctx, image.FullName(), upgrade.Options{
@@ -141,7 +141,7 @@ func (s *Builder) Upgrade(ctx context.Context, req *builderv0.UpgradeRequest) (*
 // external binding), a durable server (restricted profiles), or the in-memory
 // dev server (ephemeral local apply) — is described on
 // deploymentTemplateParameters.
-func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+func (s *Builder) Deploy(ctx context.Context, req *builderv1.DeploymentRequest) (*builderv1.DeploymentResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 	s.SetDockerImage(image)
@@ -174,7 +174,7 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 		}
 	}
 
-	var configuration *basev0.Configuration
+	var configuration *basev1.Configuration
 	response, err := s.Builder.DeployKustomize(ctx, req, services.KustomizeDeployment{
 		EnvironmentVariables: s.EnvironmentVariables,
 		Templates:            deploymentFS,
@@ -219,7 +219,7 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 			return nil
 		},
 	})
-	if err != nil || response.GetState().GetState() != builderv0.DeploymentStatus_SUCCESS || configuration == nil {
+	if err != nil || response.GetState().GetState() != builderv1.DeploymentStatus_SUCCESS || configuration == nil {
 		return response, err
 	}
 	response.Configuration = configuration
@@ -233,11 +233,11 @@ func (s *Builder) Deploy(ctx context.Context, req *builderv0.DeploymentRequest) 
 func (s *Builder) prepareExternal(
 	ctx context.Context,
 	deployment *services.KustomizeDeploymentContext,
-	req *builderv0.DeploymentRequest,
-	instance *basev0.NetworkInstance,
+	req *builderv1.DeploymentRequest,
+	instance *basev1.NetworkInstance,
 	binding *ExternalInstance,
 	restricted bool,
-	configuration **basev0.Configuration,
+	configuration **basev1.Configuration,
 ) error {
 	if restricted {
 		references := deployment.Kubernetes.GetSecretReferences()
@@ -270,13 +270,13 @@ func (s *Builder) prepareExternal(
 // token reference onto the environment variable the container consumes. The
 // plugin never receives the secret value — only the reference to it.
 func vaultRestrictedSecretReferences(
-	references map[string]*builderv0.KubernetesSecretKeyReference,
-) (map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	references map[string]*builderv1.KubernetesSecretKeyReference,
+) (map[string]*builderv1.KubernetesSecretKeyReference, error) {
 	if len(references) != 1 {
 		return nil, fmt.Errorf("restricted profile requires exactly one canonical Vault token secret reference")
 	}
 	var source string
-	var reference *builderv0.KubernetesSecretKeyReference
+	var reference *builderv1.KubernetesSecretKeyReference
 	for key, candidate := range references {
 		source = key
 		reference = candidate
@@ -288,12 +288,12 @@ func vaultRestrictedSecretReferences(
 	if reference.GetOptional() {
 		return nil, fmt.Errorf("restricted Vault token secret reference must not be optional")
 	}
-	return map[string]*builderv0.KubernetesSecretKeyReference{
+	return map[string]*builderv1.KubernetesSecretKeyReference{
 		vaultAccessTokenEnvironmentVariable: reference,
 	}, nil
 }
 
-func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {
+func (s *Builder) Create(ctx context.Context, req *builderv1.CreateRequest) (*builderv1.CreateResponse, error) {
 	defer s.Wool.Catch()
 
 	if s.TransitKey == "" {
@@ -321,7 +321,7 @@ func (s *Builder) Create(ctx context.Context, req *builderv0.CreateRequest) (*bu
 // now an ERROR rather than silently "not restricted". It is read as RESTRICTED
 // here, because the other direction would hand a restricted render the secrets
 // it exists to refuse -- and this agent holds the vault's own credentials.
-func restrictedOutput(profile builderv0.KubernetesOutputProfile) bool {
+func restrictedOutput(profile builderv1.KubernetesOutputProfile) bool {
 	parsed, err := services.ParseOutputProfile(profile)
 	if err != nil {
 		return true
@@ -346,11 +346,11 @@ func (s *Builder) CreateEndpoints(ctx context.Context) error {
 	if err != nil {
 		return s.Wool.Wrapf(err, "cannot create http endpoint")
 	}
-	s.Endpoints = []*basev0.Endpoint{s.HttpEndpoint}
+	s.Endpoints = []*basev1.Endpoint{s.HttpEndpoint}
 	return nil
 }
 
-func (s *Builder) Communicate(stream builderv0.Builder_CommunicateServer) error {
+func (s *Builder) Communicate(stream builderv1.Builder_CommunicateServer) error {
 	asker := communicate.NewQuestionAsker(stream)
 	_, err := asker.RunSequence(nil)
 	return err

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,10 +25,10 @@ func tokenFileBinding() ExternalInstance {
 func deployExternal(
 	t *testing.T,
 	bindings map[string]ExternalInstance,
-	profile builderv0.KubernetesOutputProfile,
-	configuration *basev0.Configuration,
-	references map[string]*builderv0.KubernetesSecretKeyReference,
-) (*builderv0.DeploymentResponse, string) {
+	profile builderv1.KubernetesOutputProfile,
+	configuration *basev1.Configuration,
+	references map[string]*builderv1.KubernetesSecretKeyReference,
+) (*builderv1.DeploymentResponse, string) {
 	t.Helper()
 	builder, networkMappings := deploymentBuilder(t)
 	builder.ExternalInstances = bindings
@@ -38,12 +38,12 @@ func deployExternal(
 	return response, destination
 }
 
-func vaultValues(t *testing.T, response *builderv0.DeploymentResponse) map[string]*basev0.ConfigurationValue {
+func vaultValues(t *testing.T, response *builderv1.DeploymentResponse) map[string]*basev1.ConfigurationValue {
 	t.Helper()
 	infos := response.GetConfiguration().GetInfos()
 	require.Len(t, infos, 1)
 	require.Equal(t, "vault", infos[0].GetName())
-	values := map[string]*basev0.ConfigurationValue{}
+	values := map[string]*basev1.ConfigurationValue{}
 	for _, value := range infos[0].GetConfigurationValues() {
 		values[value.GetKey()] = value
 	}
@@ -56,7 +56,7 @@ func vaultValues(t *testing.T, response *builderv0.DeploymentResponse) map[strin
 func TestExternalInstanceRendersNoVault(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		references map[string]*builderv0.KubernetesSecretKeyReference
+		references map[string]*builderv1.KubernetesSecretKeyReference
 	}{
 		{name: "no token reference"},
 		// The module still declares the vault/token secret, so the CLI still
@@ -66,11 +66,11 @@ func TestExternalInstanceRendersNoVault(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response, destination := deployExternal(t,
 				map[string]ExternalInstance{"test": tokenFileBinding()},
-				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+				builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 				nil, test.references)
-			require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+			require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 			output := response.GetDeployment().GetKubernetes()
-			require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
+			require.Equal(t, builderv1.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
 			require.True(t, output.GetValidation().GetRestricted())
 			require.Empty(t, output.GetBundle().GetSecretReferences(), "no rendered manifest consumes a secret")
 
@@ -104,8 +104,8 @@ func TestExternalInstanceWithStaticToken(t *testing.T) {
 	bindings := map[string]ExternalInstance{"test": binding}
 
 	response, _ := deployExternal(t, bindings,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, nil, restrictedVaultTokenReference)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, nil, restrictedVaultTokenReference)
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	values := vaultValues(t, response)
 	require.Equal(t, "https://vault.platform.svc.cluster.local:8200", values["address"].GetValue())
 	require.True(t, values["token"].GetSecret())
@@ -113,14 +113,14 @@ func TestExternalInstanceWithStaticToken(t *testing.T) {
 	require.NotContains(t, values, "token-file")
 
 	response, _ = deployExternal(t, bindings,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, nil, nil)
-	require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, nil, nil)
+	require.Equal(t, builderv1.DeploymentStatus_ERROR, response.GetState().GetState())
 	require.Contains(t, response.GetState().GetMessage(), "external instance without token-file")
 
 	// Local apply hands over the configured token itself.
 	response, destination := deployExternal(t, bindings,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1, vaultConfiguration("local-token"), nil)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1, vaultConfiguration("local-token"), nil)
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	values = vaultValues(t, response)
 	require.Equal(t, "local-token", values["token"].GetValue())
 	tree := readManifestTree(t, destination)
@@ -132,7 +132,7 @@ func TestExternalInstanceWithStaticToken(t *testing.T) {
 // Bindings are per environment, and once any is declared every deployed
 // environment must be bound: a typo must not fall back to a Vault of our own.
 func TestExternalInstanceBindingIsValidated(t *testing.T) {
-	restricted := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
+	restricted := builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 	valid := tokenFileBinding()
 	for _, test := range []struct {
 		name     string
@@ -151,7 +151,7 @@ func TestExternalInstanceBindingIsValidated(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response, destination := deployExternal(t, test.bindings, restricted, nil, restrictedVaultTokenReference)
-			require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+			require.Equal(t, builderv1.DeploymentStatus_ERROR, response.GetState().GetState())
 			require.Contains(t, response.GetState().GetMessage(), test.message)
 			entries, err := os.ReadDir(destination)
 			require.NoError(t, err)
@@ -163,8 +163,8 @@ func TestExternalInstanceBindingIsValidated(t *testing.T) {
 // Without external-instances nothing changes: the render owns its Vault.
 func TestNoExternalInstancesKeepsTheRenderedVault(t *testing.T) {
 	response, destination := deployExternal(t, nil,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, nil, restrictedVaultTokenReference)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, nil, restrictedVaultTokenReference)
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	require.True(t, strings.Contains(readManifestTree(t, destination), "kind: StatefulSet"))
 	require.Equal(t, "http://vault:8200", vaultValues(t, response)["address"].GetValue())
 }

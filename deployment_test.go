@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	agenttesting "github.com/codefly-dev/core/agents/testing"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -54,18 +54,18 @@ func TestDeployedServicePublishesAllocatedPort(t *testing.T) {
 	allocated.Host = "vault.codefly-test.svc.cluster.local:8080"
 	allocated.Port = 8080
 	allocated.Address = "http://vault.codefly-test.svc.cluster.local:8080"
-	networkMappings := []*basev0.NetworkMapping{{
+	networkMappings := []*basev1.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{allocated},
+		Instances: []*basev1.NetworkInstance{allocated},
 	}}
 	destination := t.TempDir()
 
 	response, err := builder.Deploy(ctx, deploymentRequest(
 		destination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		networkMappings,
 		nil,
-		map[string]*builderv0.KubernetesSecretKeyReference{
+		map[string]*builderv1.KubernetesSecretKeyReference{
 			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 				Name: "vault-credentials",
 				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
@@ -73,7 +73,7 @@ func TestDeployedServicePublishesAllocatedPort(t *testing.T) {
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 
 	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
 	require.NoError(t, err)
@@ -93,10 +93,10 @@ func TestNativePortDeploymentRendersUnchangedService(t *testing.T) {
 
 	response, err := builder.Deploy(ctx, deploymentRequest(
 		destination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		networkMappings,
 		nil,
-		map[string]*builderv0.KubernetesSecretKeyReference{
+		map[string]*builderv1.KubernetesSecretKeyReference{
 			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 				Name: "vault-credentials",
 				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
@@ -104,7 +104,7 @@ func TestNativePortDeploymentRendersUnchangedService(t *testing.T) {
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 
 	service, err := os.ReadFile(filepath.Join(destination, "base", "service.yaml"))
 	require.NoError(t, err)
@@ -153,7 +153,7 @@ func parseRenderedService(t *testing.T, destination string) renderedService {
 func TestDeploymentProfiles(t *testing.T) {
 	ctx := context.Background()
 	builder := NewBuilder()
-	identity := &basev0.ServiceIdentity{
+	identity := &basev1.ServiceIdentity{
 		Workspace: "workspace",
 		Module:    "module",
 		Name:      "vault",
@@ -162,7 +162,7 @@ func TestDeploymentProfiles(t *testing.T) {
 	require.NoError(t, builder.HeadlessLoad(ctx, identity))
 	builder.Information.Service = resources.ToServiceWithCase(builder.Identity)
 	builder.Information.Module = resources.ToModuleWithCase(builder.Identity)
-	builder.HttpEndpoint = &basev0.Endpoint{
+	builder.HttpEndpoint = &basev1.Endpoint{
 		Name:    "http",
 		Module:  identity.Module,
 		Service: identity.Name,
@@ -170,22 +170,22 @@ func TestDeploymentProfiles(t *testing.T) {
 	}
 	// A visibility: module endpoint has no DNS, so the remote network manager
 	// emits a container-only mapping in every deploy profile — no public instance.
-	networkMappings := []*basev0.NetworkMapping{{
+	networkMappings := []*basev1.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
+		Instances: []*basev1.NetworkInstance{containerVaultInstance()},
 	}}
 
 	const secret = "must-stay-ephemeral"
 	ephemeralDestination := t.TempDir()
 	ephemeral, err := builder.Deploy(ctx, deploymentRequest(
 		ephemeralDestination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		networkMappings,
-		&basev0.Configuration{
+		&basev1.Configuration{
 			Origin: "module/vault",
-			Infos: []*basev0.ConfigurationInformation{{
+			Infos: []*basev1.ConfigurationInformation{{
 				Name: "vault",
-				ConfigurationValues: []*basev0.ConfigurationValue{{
+				ConfigurationValues: []*basev1.ConfigurationValue{{
 					Key:    "VAULT_TOKEN",
 					Value:  secret,
 					Secret: true,
@@ -195,10 +195,10 @@ func TestDeploymentProfiles(t *testing.T) {
 		nil,
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, ephemeral.GetState().GetState())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, ephemeral.GetState().GetState())
 	require.Equal(
 		t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		ephemeral.GetDeployment().GetKubernetes().GetProfile(),
 	)
 	ephemeralTree := readManifestTree(t, ephemeralDestination)
@@ -213,10 +213,10 @@ func TestDeploymentProfiles(t *testing.T) {
 	restrictedDestination := t.TempDir()
 	restricted, err := builder.Deploy(ctx, deploymentRequest(
 		restrictedDestination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		networkMappings,
 		nil,
-		map[string]*builderv0.KubernetesSecretKeyReference{
+		map[string]*builderv1.KubernetesSecretKeyReference{
 			"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 				Name: "vault-credentials",
 				Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
@@ -224,10 +224,10 @@ func TestDeploymentProfiles(t *testing.T) {
 		},
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, restricted.GetState().GetState(), restricted.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, restricted.GetState().GetState(), restricted.GetState().GetMessage())
 	output := restricted.GetDeployment().GetKubernetes()
-	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, output.GetProfile())
-	require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
+	require.Equal(t, builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, output.GetProfile())
+	require.Equal(t, builderv1.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
 	require.True(t, output.GetValidation().GetRestricted())
 	// Token handoff: the restricted deployment's connection configuration
 	// advertises an empty, secret token capability the promotion driver fills;
@@ -274,7 +274,7 @@ func TestDeploymentProfiles(t *testing.T) {
 	// promotion driver needs to consume the output without any plugin-specific
 	// publication code.
 	bundle := output.GetBundle()
-	require.Equal(t, builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, bundle.GetProfile())
+	require.Equal(t, builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1, bundle.GetProfile())
 	require.Equal(t, output.GetContractVersion(), bundle.GetContractVersion())
 	require.NotEmpty(t, bundle.GetContractVersion())
 	require.Equal(t, []string{"overlays/test"}, bundle.GetEntryPoints())
@@ -308,10 +308,10 @@ func TestEphemeralDeploymentFailsClosedWithoutVaultToken(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		configuration *basev0.Configuration
+		configuration *basev1.Configuration
 	}{
 		{name: "nil configuration"},
-		{name: "missing token", configuration: &basev0.Configuration{}},
+		{name: "missing token", configuration: &basev1.Configuration{}},
 		{name: "empty token", configuration: vaultConfiguration("")},
 		{name: "blank token", configuration: vaultConfiguration(" \t")},
 	}
@@ -319,14 +319,14 @@ func TestEphemeralDeploymentFailsClosedWithoutVaultToken(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response, err := builder.Deploy(ctx, deploymentRequest(
 				t.TempDir(),
-				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+				builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 				networkMappings,
 				test.configuration,
 				nil,
 			))
 
 			require.NoError(t, err)
-			require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+			require.Equal(t, builderv1.DeploymentStatus_ERROR, response.GetState().GetState())
 			require.Contains(t, response.GetState().GetMessage(), "cannot get vault token")
 		})
 	}
@@ -339,7 +339,7 @@ func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
 	const deploymentCount = 24
 	type result struct {
 		index    int
-		response *builderv0.DeploymentResponse
+		response *builderv1.DeploymentResponse
 		err      error
 	}
 	results := make(chan result, deploymentCount)
@@ -358,7 +358,7 @@ func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
 			token := fmt.Sprintf("request-token-%d", i)
 			response, err := builder.Deploy(ctx, deploymentRequest(
 				destinations[i],
-				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+				builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 				networkMappings,
 				vaultConfiguration(token),
 				nil,
@@ -372,7 +372,7 @@ func TestConcurrentEphemeralDeploymentsKeepTokensRequestScoped(t *testing.T) {
 
 	for deployment := range results {
 		require.NoError(t, deployment.err)
-		require.Equal(t, builderv0.DeploymentStatus_SUCCESS, deployment.response.GetState().GetState())
+		require.Equal(t, builderv1.DeploymentStatus_SUCCESS, deployment.response.GetState().GetState())
 		token, err := resources.GetConfigurationValue(ctx, deployment.response.GetConfiguration(), "vault", "token")
 		require.NoError(t, err)
 		require.Equal(t, fmt.Sprintf("request-token-%d", deployment.index), token)
@@ -385,7 +385,7 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		references map[string]*builderv0.KubernetesSecretKeyReference
+		references map[string]*builderv1.KubernetesSecretKeyReference
 		message    string
 	}{
 		{
@@ -394,7 +394,7 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 		},
 		{
 			name: "misnamed",
-			references: map[string]*builderv0.KubernetesSecretKeyReference{
+			references: map[string]*builderv1.KubernetesSecretKeyReference{
 				"VAULT_TOKEN": {
 					Name: "vault-credentials",
 					Key:  "root-token",
@@ -404,7 +404,7 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 		},
 		{
 			name: "optional",
-			references: map[string]*builderv0.KubernetesSecretKeyReference{
+			references: map[string]*builderv1.KubernetesSecretKeyReference{
 				"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 					Name:     "vault-credentials",
 					Key:      "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
@@ -418,13 +418,13 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response, err := builder.Deploy(ctx, deploymentRequest(
 				t.TempDir(),
-				builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+				builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 				networkMappings,
 				nil,
 				test.references,
 			))
 			require.NoError(t, err)
-			require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+			require.Equal(t, builderv1.DeploymentStatus_ERROR, response.GetState().GetState())
 			require.Contains(t, response.GetState().GetMessage(), test.message)
 		})
 	}
@@ -437,11 +437,11 @@ func TestRestrictedDeploymentRequiresVaultTokenReference(t *testing.T) {
 func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
 	ctx := context.Background()
 	builder, _ := deploymentBuilder(t)
-	containerOnly := []*basev0.NetworkMapping{{
+	containerOnly := []*basev1.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
+		Instances: []*basev1.NetworkInstance{containerVaultInstance()},
 	}}
-	references := map[string]*builderv0.KubernetesSecretKeyReference{
+	references := map[string]*builderv1.KubernetesSecretKeyReference{
 		"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 			Name: "vault-credentials",
 			Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
@@ -450,13 +450,13 @@ func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
 
 	response, err := builder.Deploy(ctx, deploymentRequest(
 		t.TempDir(),
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		containerOnly,
 		nil,
 		references,
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 
 	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
 	require.NoError(t, err)
@@ -474,31 +474,31 @@ func TestRestrictedDeploymentAdvertisesContainerAddress(t *testing.T) {
 func TestEphemeralDeploymentResolvesContainerAddress(t *testing.T) {
 	ctx := context.Background()
 	builder, _ := deploymentBuilder(t)
-	containerOnly := []*basev0.NetworkMapping{{
+	containerOnly := []*basev1.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
+		Instances: []*basev1.NetworkInstance{containerVaultInstance()},
 	}}
 
 	response, err := builder.Deploy(ctx, deploymentRequest(
 		t.TempDir(),
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		containerOnly,
 		vaultConfiguration("must-stay-ephemeral"),
 		nil,
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 
 	address, err := resources.GetConfigurationValue(ctx, response.GetConfiguration(), "vault", "address")
 	require.NoError(t, err)
 	require.Equal(t, containerVaultInstance().GetAddress(), address)
 }
 
-func deploymentBuilder(t *testing.T) (*Builder, []*basev0.NetworkMapping) {
+func deploymentBuilder(t *testing.T) (*Builder, []*basev1.NetworkMapping) {
 	t.Helper()
 	ctx := context.Background()
 	builder := NewBuilder()
-	identity := &basev0.ServiceIdentity{
+	identity := &basev1.ServiceIdentity{
 		Workspace: "workspace",
 		Module:    "module",
 		Name:      "vault",
@@ -507,20 +507,20 @@ func deploymentBuilder(t *testing.T) (*Builder, []*basev0.NetworkMapping) {
 	require.NoError(t, builder.HeadlessLoad(ctx, identity))
 	builder.Information.Service = resources.ToServiceWithCase(builder.Identity)
 	builder.Information.Module = resources.ToModuleWithCase(builder.Identity)
-	builder.HttpEndpoint = &basev0.Endpoint{
+	builder.HttpEndpoint = &basev1.Endpoint{
 		Name:    "http",
 		Module:  identity.Module,
 		Service: identity.Name,
 		Api:     "http",
 	}
-	return builder, []*basev0.NetworkMapping{{
+	return builder, []*basev1.NetworkMapping{{
 		Endpoint:  builder.HttpEndpoint,
-		Instances: []*basev0.NetworkInstance{containerVaultInstance()},
+		Instances: []*basev1.NetworkInstance{containerVaultInstance()},
 	}}
 }
 
-func containerVaultInstance() *basev0.NetworkInstance {
-	return &basev0.NetworkInstance{
+func containerVaultInstance() *basev1.NetworkInstance {
+	return &basev1.NetworkInstance{
 		Access:   resources.NewContainerNetworkAccess(),
 		Hostname: "vault",
 		Host:     "vault:8200",
@@ -529,12 +529,12 @@ func containerVaultInstance() *basev0.NetworkInstance {
 	}
 }
 
-func vaultConfiguration(token string) *basev0.Configuration {
-	return &basev0.Configuration{
+func vaultConfiguration(token string) *basev1.Configuration {
+	return &basev1.Configuration{
 		Origin: "module/vault",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "vault",
-			ConfigurationValues: []*basev0.ConfigurationValue{{
+			ConfigurationValues: []*basev1.ConfigurationValue{{
 				Key:    "VAULT_TOKEN",
 				Value:  token,
 				Secret: true,
@@ -545,17 +545,17 @@ func vaultConfiguration(token string) *basev0.Configuration {
 
 func deploymentRequest(
 	destination string,
-	profile builderv0.KubernetesOutputProfile,
-	networkMappings []*basev0.NetworkMapping,
-	configuration *basev0.Configuration,
-	secretReferences map[string]*builderv0.KubernetesSecretKeyReference,
-) *builderv0.DeploymentRequest {
-	return &builderv0.DeploymentRequest{
-		Environment:     &basev0.Environment{Name: "test"},
+	profile builderv1.KubernetesOutputProfile,
+	networkMappings []*basev1.NetworkMapping,
+	configuration *basev1.Configuration,
+	secretReferences map[string]*builderv1.KubernetesSecretKeyReference,
+) *builderv1.DeploymentRequest {
+	return &builderv1.DeploymentRequest{
+		Environment:     &basev1.Environment{Name: "test"},
 		NetworkMappings: networkMappings,
 		Configuration:   configuration,
-		Deployment: &builderv0.Deployment{Kind: &builderv0.Deployment_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeployment{
+		Deployment: &builderv1.Deployment{Kind: &builderv1.Deployment_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeployment{
 				Namespace:        "codefly-test",
 				Destination:      destination,
 				Profile:          profile,

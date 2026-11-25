@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
-var restrictedVaultTokenReference = map[string]*builderv0.KubernetesSecretKeyReference{
+var restrictedVaultTokenReference = map[string]*builderv1.KubernetesSecretKeyReference{
 	"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN": {
 		Name: "vault-credentials",
 		Key:  "CODEFLY__SERVICE_SECRET_CONFIGURATION__MODULE__VAULT__VAULT__VAULT_TOKEN",
@@ -101,13 +101,13 @@ func renderedVaultContainer(t *testing.T, destination string) renderedContainer 
 
 // deployEphemeral renders the local-apply profile, the one that still runs the
 // in-memory dev server.
-func deployEphemeral(t *testing.T) (*builderv0.DeploymentResponse, string) {
+func deployEphemeral(t *testing.T) (*builderv1.DeploymentResponse, string) {
 	t.Helper()
 	builder, networkMappings := deploymentBuilder(t)
 	destination := t.TempDir()
 	response, err := builder.Deploy(context.Background(), deploymentRequest(
 		destination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		networkMappings,
 		vaultConfiguration("must-stay-ephemeral"),
 		nil,
@@ -118,14 +118,14 @@ func deployEphemeral(t *testing.T) (*builderv0.DeploymentResponse, string) {
 
 // deployRestricted renders the restricted (GitOps) profile and returns the
 // vault container's postStart command.
-func deployRestricted(t *testing.T, transitKey string) (*builderv0.DeploymentResponse, string) {
+func deployRestricted(t *testing.T, transitKey string) (*builderv1.DeploymentResponse, string) {
 	t.Helper()
 	builder, networkMappings := deploymentBuilder(t)
 	builder.TransitKey = transitKey
 	destination := t.TempDir()
 	response, err := builder.Deploy(context.Background(), deploymentRequest(
 		destination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		networkMappings,
 		nil,
 		restrictedVaultTokenReference,
@@ -149,9 +149,9 @@ func TestRestrictedRenderRunsADurableVault(t *testing.T) {
 	} {
 		t.Run("transit-key="+test.setting, func(t *testing.T) {
 			response, destination := deployRestricted(t, test.setting)
-			require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+			require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 			output := response.GetDeployment().GetKubernetes()
-			require.Equal(t, builderv0.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
+			require.Equal(t, builderv1.KubernetesManifestValidation_STATUS_PASSED, output.GetValidation().GetStaticValidation())
 			require.True(t, output.GetValidation().GetRestricted())
 
 			statefulSet := renderedVaultStatefulSet(t, destination)
@@ -216,13 +216,13 @@ func TestEphemeralRenderProvisionsTransitOnVaultStart(t *testing.T) {
 	destination := t.TempDir()
 	response, err := builder.Deploy(context.Background(), deploymentRequest(
 		destination,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		networkMappings,
 		vaultConfiguration("must-stay-ephemeral"),
 		nil,
 	))
 	require.NoError(t, err)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	container := renderedVaultContainer(t, destination)
 	require.Equal(t,
 		[]string{"/bin/sh", "-c", provisionScript, "vault-provision", "dev", "api-keys"},
@@ -238,7 +238,7 @@ func TestDeployRefusesAnInvalidTransitKeyName(t *testing.T) {
 	for _, key := range []string{"../sys", "a/b", ".hidden", "with space", "semi;colon", "$(id)", strings.Repeat("k", 129)} {
 		t.Run(key, func(t *testing.T) {
 			response, _ := deployRestricted(t, key)
-			require.Equal(t, builderv0.DeploymentStatus_ERROR, response.GetState().GetState())
+			require.Equal(t, builderv1.DeploymentStatus_ERROR, response.GetState().GetState())
 			require.Contains(t, response.GetState().GetMessage(), "is not a valid Vault transit key name")
 		})
 	}
@@ -415,7 +415,7 @@ func TestTransitProvisionScriptFailsClosed(t *testing.T) {
 // inside it, twice, and calls transit the way a consumer does.
 func TestRenderedHookProvisionsThePinnedVault(t *testing.T) {
 	response, destination := deployEphemeral(t)
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	hook := renderedVaultContainer(t, destination).Lifecycle.PostStart.Exec.Command
 	require.NotEmpty(t, hook)
 

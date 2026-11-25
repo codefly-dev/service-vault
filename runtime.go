@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/wool"
@@ -43,13 +43,13 @@ func NewRuntime() *Runtime {
 	}
 }
 
-func (s *Runtime) Load(ctx context.Context, req *runtimev0.LoadRequest) (*runtimev0.LoadResponse, error) {
+func (s *Runtime) Load(ctx context.Context, req *runtimev1.LoadRequest) (*runtimev1.LoadResponse, error) {
 	defer s.Wool.Catch()
 
 	return s.Runtime.LoadService(ctx, req, services.RuntimeLoad{
 		Settings:     s.Settings,
 		Requirements: requirements,
-		ResolveEndpoints: func(ctx context.Context, endpoints []*basev0.Endpoint) error {
+		ResolveEndpoints: func(ctx context.Context, endpoints []*basev1.Endpoint) error {
 			s.Wool.Debug("endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
 			endpoint, err := resources.FindHTTPEndpoint(ctx, endpoints)
 			if err != nil {
@@ -61,14 +61,14 @@ func (s *Runtime) Load(ctx context.Context, req *runtimev0.LoadRequest) (*runtim
 	})
 }
 
-func callingContext() *basev0.NetworkAccess {
+func callingContext() *basev1.NetworkAccess {
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		return resources.NewContainerNetworkAccess()
 	}
 	return resources.NewNativeNetworkAccess()
 }
 
-func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+func (s *Runtime) Init(ctx context.Context, req *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 
@@ -175,7 +175,7 @@ func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtim
 		_ = s.teardown(ctx)
 		return s.Runtime.InitError(err)
 	}
-	runtimeConfigurations := make([]*basev0.Configuration, 0, len(net.Instances))
+	runtimeConfigurations := make([]*basev1.Configuration, 0, len(net.Instances))
 	for _, inst := range net.Instances {
 		runtimeConfigurations = append(runtimeConfigurations, s.CreateConnectionConfiguration(inst, vaultToken))
 	}
@@ -310,7 +310,7 @@ func (s *Runtime) vaultRequest(ctx context.Context, method, path, body string) e
 	return nil
 }
 
-func (s *Runtime) Start(ctx context.Context, req *runtimev0.StartRequest) (*runtimev0.StartResponse, error) {
+func (s *Runtime) Start(ctx context.Context, req *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 
@@ -335,7 +335,7 @@ func (s *Runtime) Start(ctx context.Context, req *runtimev0.StartRequest) (*runt
 	return s.Runtime.StartResponse()
 }
 
-func (s *Runtime) Information(ctx context.Context, req *runtimev0.InformationRequest) (*runtimev0.InformationResponse, error) {
+func (s *Runtime) Information(ctx context.Context, req *runtimev1.InformationRequest) (*runtimev1.InformationResponse, error) {
 	return s.Runtime.InformationResponse(ctx, req)
 }
 
@@ -389,7 +389,7 @@ func (s *Runtime) retryShutdown(ctx context.Context, shutdown func(context.Conte
 	return err
 }
 
-func (s *Runtime) Stop(ctx context.Context, req *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+func (s *Runtime) Stop(ctx context.Context, req *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 
@@ -399,7 +399,7 @@ func (s *Runtime) Stop(ctx context.Context, req *runtimev0.StopRequest) (*runtim
 	return s.Runtime.StopResponse()
 }
 
-func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*runtimev0.DestroyResponse, error) {
+func (s *Runtime) Destroy(ctx context.Context, req *runtimev1.DestroyRequest) (*runtimev1.DestroyResponse, error) {
 	defer s.Wool.Catch()
 	ctx = s.Wool.Inject(ctx)
 
@@ -411,7 +411,7 @@ func (s *Runtime) Destroy(ctx context.Context, req *runtimev0.DestroyRequest) (*
 	return s.Runtime.DestroyResponse()
 }
 
-func (s *Runtime) Test(ctx context.Context, req *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
+func (s *Runtime) Test(ctx context.Context, req *runtimev1.TestRequest) (*runtimev1.TestResponse, error) {
 	// A RUN-LEVEL verdict, stated. This agent ships no tests of its own -- it
 	// runs a datastore -- so the honest run is zero tests and zero failures,
 	// which is what the status-only answer always meant. It has to be said:
@@ -422,8 +422,8 @@ func (s *Runtime) Test(ctx context.Context, req *runtimev0.TestRequest) (*runtim
 	if err != nil {
 		return nil, err
 	}
-	response.Result = &runtimev0.TestRunResult{
-		State:   runtimev0.TestRunResult_PASSED,
+	response.Result = &runtimev1.TestRunResult{
+		State:   runtimev1.TestRunResult_PASSED,
 		Message: "this agent ships no tests of its own: zero run, zero failed",
 	}
 	return response, nil

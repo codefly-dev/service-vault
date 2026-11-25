@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/base"
@@ -80,9 +80,9 @@ func TestConnectionConfigurationTokenProfiles(t *testing.T) {
 }
 
 func TestVaultImageAudit(t *testing.T) {
-	response, err := NewBuilder().Audit(context.Background(), &builderv0.AuditRequest{FailOnVuln: true})
+	response, err := NewBuilder().Audit(context.Background(), &builderv1.AuditRequest{FailOnVuln: true})
 	require.NoError(t, err)
-	require.Equal(t, builderv0.AuditStatus_CLEAN, response.GetState().GetState(), "message: %s; findings: %v", response.GetState().GetMessage(), response.GetFindings())
+	require.Equal(t, builderv1.AuditStatus_CLEAN, response.GetState().GetState(), "message: %s; findings: %v", response.GetState().GetMessage(), response.GetFindings())
 	require.Empty(t, response.GetFindings())
 }
 
@@ -91,9 +91,9 @@ func TestVaultImageAudit(t *testing.T) {
 // change how the scan runs — sizing, cache location, output flags. Exercising
 // the real container here makes such a break fail in CI instead of the field.
 func TestVaultImageSBOM(t *testing.T) {
-	response, err := NewBuilder().SBOM(context.Background(), &builderv0.SBOMRequest{})
+	response, err := NewBuilder().SBOM(context.Background(), &builderv1.SBOMRequest{})
 	require.NoError(t, err)
-	require.Equal(t, builderv0.SBOMStatus_COMPLETE, response.GetState().GetState(), "message: %s", response.GetState().GetMessage())
+	require.Equal(t, builderv1.SBOMStatus_COMPLETE, response.GetState().GetState(), "message: %s", response.GetState().GetMessage())
 	require.NotEmpty(t, response.GetBom().GetComponents())
 	require.NotEmpty(t, response.GetSha256())
 	// Verify the actual binary inventory contains the fixes, even if a scanner
@@ -135,7 +135,7 @@ func TestCreateToRunNix(t *testing.T) {
 
 // testCreateToRun drives Load → Init → Start → GET /v1/sys/health for one
 // runtime context, so docker and nix exercise the identical agent path.
-func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
+func testCreateToRun(t *testing.T, runtimeContext *basev1.RuntimeContext) {
 	// Keep all runtime custody and caches owned by this test, including on failure.
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	wool.SetGlobalLogLevel(wool.DEBUG)
@@ -150,7 +150,7 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	err := service.SaveAtDir(ctx, path.Join(tmpDir, "mod", service.Name))
 	require.NoError(t, err)
 
-	identity := &basev0.ServiceIdentity{
+	identity := &basev1.ServiceIdentity{
 		Name:                service.Name,
 		Module:              "mod",
 		Workspace:           workspace.Name,
@@ -159,11 +159,11 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	}
 	builder := NewBuilder()
 
-	resp, err := builder.Load(ctx, &builderv0.LoadRequest{DisableCatch: true, Identity: identity, CreationMode: &builderv0.CreationMode{Communicate: false}})
+	resp, err := builder.Load(ctx, &builderv1.LoadRequest{DisableCatch: true, Identity: identity, CreationMode: &builderv1.CreationMode{Communicate: false}})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
-	_, err = builder.Create(ctx, &builderv0.CreateRequest{})
+	_, err = builder.Create(ctx, &builderv1.CreateRequest{})
 	require.NoError(t, err)
 
 	// Now run it
@@ -175,7 +175,7 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 
 	env := resources.LocalEnvironment()
 
-	_, err = runtime.Load(ctx, &runtimev0.LoadRequest{
+	_, err = runtime.Load(ctx, &runtimev1.LoadRequest{
 		Identity:     identity,
 		Environment:  shared.Must(env.Proto()),
 		DisableCatch: true})
@@ -188,16 +188,16 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.Equal(t, 1, len(networkMappings))
 
 	defer func() {
-		_, _ = runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+		_, _ = runtime.Destroy(ctx, &runtimev1.DestroyRequest{})
 	}()
 
 	const configuredToken = "dev-root-token"
-	firstInit, firstToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, &basev0.Configuration{
+	firstInit, firstToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, &basev1.Configuration{
 		Origin:         fmt.Sprintf("mod/%s", service.Name),
 		RuntimeContext: resources.NewRuntimeContextFree(),
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "vault",
-			ConfigurationValues: []*basev0.ConfigurationValue{{
+			ConfigurationValues: []*basev1.ConfigurationValue{{
 				Key:   "VAULT_TOKEN",
 				Value: configuredToken,
 			}},
@@ -219,12 +219,12 @@ func testCreateToRun(t *testing.T, runtimeContext *basev0.RuntimeContext) {
 	require.NotEmpty(t, encrypted.Data.Ciphertext)
 	require.NoError(t, localVaultCall(ctx, runtime.vaultAddress, "POST", "/v1/secret/data/lifecycle", firstToken,
 		map[string]any{"data": map[string]string{"value": "retained"}}, nil))
-	stopped, err := runtime.Stop(ctx, &runtimev0.StopRequest{})
+	stopped, err := runtime.Stop(ctx, &runtimev1.StopRequest{})
 	require.NoError(t, err)
-	require.Equal(t, runtimev0.StopStatus_SUCCESS, stopped.GetStatus().GetState(), stopped.GetStatus().GetMessage())
-	destroyed, err := runtime.Destroy(ctx, &runtimev0.DestroyRequest{})
+	require.Equal(t, runtimev1.StopStatus_SUCCESS, stopped.GetStatus().GetState(), stopped.GetStatus().GetMessage())
+	destroyed, err := runtime.Destroy(ctx, &runtimev1.DestroyRequest{})
 	require.NoError(t, err)
-	require.Equal(t, runtimev0.DestroyStatus_SUCCESS, destroyed.GetStatus().GetState(), destroyed.GetStatus().GetMessage())
+	require.Equal(t, runtimev1.DestroyStatus_SUCCESS, destroyed.GetStatus().GetState(), destroyed.GetStatus().GetMessage())
 
 	secondInit, secondToken := initAndStartRuntime(t, ctx, runtime, runtimeContext, networkMappings, nil)
 	require.Len(t, secondInit.GetRuntimeConfigurations(), len(networkMappings[0].GetInstances()))
@@ -250,22 +250,22 @@ func initAndStartRuntime(
 	t *testing.T,
 	ctx context.Context,
 	runtime *Runtime,
-	runtimeContext *basev0.RuntimeContext,
-	networkMappings []*basev0.NetworkMapping,
-	configuration *basev0.Configuration,
-) (*runtimev0.InitResponse, string) {
+	runtimeContext *basev1.RuntimeContext,
+	networkMappings []*basev1.NetworkMapping,
+	configuration *basev1.Configuration,
+) (*runtimev1.InitResponse, string) {
 	t.Helper()
 
 	// Init boots vault, publishes its token to dependants, and replaces that
 	// publication on a later Init.
-	init, err := runtime.Init(ctx, &runtimev0.InitRequest{
+	init, err := runtime.Init(ctx, &runtimev1.InitRequest{
 		RuntimeContext:          runtimeContext,
 		Configuration:           configuration,
 		ProposedNetworkMappings: networkMappings,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, init)
-	require.Equal(t, runtimev0.InitStatus_READY, init.GetStatus().GetState(), init.GetStatus().GetMessage())
+	require.Equal(t, runtimev1.InitStatus_READY, init.GetStatus().GetState(), init.GetStatus().GetMessage())
 
 	var token string
 	for _, configuration := range init.GetRuntimeConfigurations() {
@@ -282,9 +282,9 @@ func initAndStartRuntime(
 
 	// Start drives the post-unseal seeding (transit engine + JWT key) over HTTP,
 	// which only succeeds if vault is up and stayed up.
-	started, err := runtime.Start(ctx, &runtimev0.StartRequest{})
+	started, err := runtime.Start(ctx, &runtimev1.StartRequest{})
 	require.NoError(t, err)
-	require.Equal(t, runtimev0.StartStatus_STARTED, started.GetStatus().GetState(), started.GetStatus().GetMessage())
+	require.Equal(t, runtimev1.StartStatus_STARTED, started.GetStatus().GetState(), started.GetStatus().GetMessage())
 
 	// Explicit health assertion: vault answers 200 (initialized, unsealed, active).
 	require.NotEmpty(t, runtime.vaultAddress)

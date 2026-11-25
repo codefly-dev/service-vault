@@ -7,5 +7,5 @@ on:
 
 jobs:
   release:
-    uses: codefly-dev/core/.github/workflows/go-service-release.yml@v0.19.4
+    uses: codefly-dev/core/.github/workflows/go-service-release.yml@50c2b2ab29a47504cb81195670361d140745f6cb
     secrets: inherit

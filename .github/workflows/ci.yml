@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   ci:
-    uses: codefly-dev/core/.github/workflows/go-service-ci.yml@v0.19.4
+    uses: codefly-dev/core/.github/workflows/go-service-ci.yml@50c2b2ab29a47504cb81195670361d140745f6cb
 
   nix-lifecycle:
     runs-on: ubuntu-latest

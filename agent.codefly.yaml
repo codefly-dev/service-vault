@@ -1,10 +1,10 @@
 publisher: codefly.dev
 kind: codefly:service
 name: vault
-version: 0.0.44
+version: 0.0.45
 source:
   directory: .
-  agent: codefly.dev/go:0.0.56
+  agent: codefly.dev/go:0.0.76
 release:
   owner: workflow
   workflow: releaser.yml

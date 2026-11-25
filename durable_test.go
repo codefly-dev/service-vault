@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,7 +89,7 @@ type durableHarness struct {
 func newDurableHarness(t *testing.T) *durableHarness {
 	t.Helper()
 	response, destination := deployRestricted(t, "")
-	require.Equal(t, builderv0.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
+	require.Equal(t, builderv1.DeploymentStatus_SUCCESS, response.GetState().GetState(), response.GetState().GetMessage())
 	container := renderedVaultContainer(t, destination)
 	require.NotEmpty(t, container.Command)
 	require.Empty(t, container.Lifecycle.PostStart.Exec.Command, "the server's own command provisions; no exec hook")

@@ -9,8 +9,8 @@ import (
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/builders"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/shared"
@@ -60,10 +60,10 @@ type Service struct {
 	// Settings
 	*Settings
 
-	HttpEndpoint *basev0.Endpoint
+	HttpEndpoint *basev1.Endpoint
 }
 
-func (s *Service) GetAgentInformation(ctx context.Context, _ *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
+func (s *Service) GetAgentInformation(ctx context.Context, _ *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
 	readme, err := templates.ApplyTemplateFrom(ctx, shared.Embed(readmeFS), "templates/agent/README.md", s.Information)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -74,10 +74,10 @@ func (s *Service) GetAgentInformation(ctx context.Context, _ *agentv0.AgentInfor
 			Nix:    true,
 			Docker: true,
 		},
-		Config: []*agentv0.ConfigurationValueDetail{
+		Config: []*agentv1.ConfigurationValueDetail{
 			{
 				Name: "vault", Description: "vault connection",
-				Fields: []*agentv0.ConfigurationValueInformation{
+				Fields: []*agentv1.ConfigurationValueInformation{
 					{Name: "address", Description: "vault HTTP address"},
 					{Name: "token", Description: "vault authentication token"},
 				},
@@ -100,7 +100,7 @@ func NewService() *Service {
 	}
 }
 
-func (s *Service) VaultTokenFromConfiguration(ctx context.Context, conf *basev0.Configuration) (string, error) {
+func (s *Service) VaultTokenFromConfiguration(ctx context.Context, conf *basev1.Configuration) (string, error) {
 	token, err := resources.GetConfigurationValue(ctx, conf, "vault", "VAULT_TOKEN")
 	if err != nil {
 		return "", s.Wool.Wrapf(err, "cannot get vault token")
@@ -111,7 +111,7 @@ func (s *Service) VaultTokenFromConfiguration(ctx context.Context, conf *basev0.
 	return token, nil
 }
 
-func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance, vaultToken string) *basev0.Configuration {
+func (s *Service) CreateConnectionConfiguration(instance *basev1.NetworkInstance, vaultToken string) *basev1.Configuration {
 	return s.createConnectionConfiguration(instance, &vaultToken)
 }
 
@@ -119,23 +119,23 @@ func (s *Service) CreateConnectionConfiguration(instance *basev0.NetworkInstance
 // restricted-profile deployment: the address plus an empty, secret token
 // capability. The value is deliberately blank — the plugin never receives or
 // serializes the token; the promotion driver fills it from the external secret.
-func (s *Service) CreateRestrictedConnectionConfiguration(instance *basev0.NetworkInstance) *basev0.Configuration {
+func (s *Service) CreateRestrictedConnectionConfiguration(instance *basev1.NetworkInstance) *basev1.Configuration {
 	token := ""
 	return s.createConnectionConfiguration(instance, &token)
 }
 
-func (s *Service) createConnectionConfiguration(instance *basev0.NetworkInstance, vaultToken *string) *basev0.Configuration {
+func (s *Service) createConnectionConfiguration(instance *basev1.NetworkInstance, vaultToken *string) *basev1.Configuration {
 	address := instance.Address
-	values := []*basev0.ConfigurationValue{
+	values := []*basev1.ConfigurationValue{
 		{Key: "address", Value: address, Secret: false},
 	}
 	if vaultToken != nil {
-		values = append(values, &basev0.ConfigurationValue{Key: "token", Value: *vaultToken, Secret: true})
+		values = append(values, &basev1.ConfigurationValue{Key: "token", Value: *vaultToken, Secret: true})
 	}
-	return &basev0.Configuration{
+	return &basev1.Configuration{
 		Origin:         s.Unique(),
 		RuntimeContext: resources.RuntimeContextFromInstance(instance),
-		Infos: []*basev0.ConfigurationInformation{
+		Infos: []*basev1.ConfigurationInformation{
 			{Name: "vault",
 				ConfigurationValues: values,
 			},
